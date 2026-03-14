@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div class="logo">
+                <span class="logo-icon">🧬</span>
+                <span class="logo-text">PrimerDesigner</span>
+            </div>
+            <div class="status">
+                <span class="status-indicator online" id="status-indicator"></span>
+                <span class="status-text" id="status-text">Онлайн</span>
+            </div>
+        </div>
+
+        <div class="tabs">
+            <button class="tab active" data-tab="design">Дизайн</button>
+            <button class="tab" data-tab="saved">Сохраненные</button>
+            <button class="tab" data-tab="history">История</button>
+            <button class="tab" data-tab="settings">Настройки</button>
+        </div>
+
+        <div class="tab-pane active" id="tab-design">
+            <div class="quick-insert" id="quick-insert">
+                <span class="quick-insert-icon">📋</span>
+                <span class="quick-insert-text">Есть последовательность с NCBI</span>
+                <button class="btn btn-small btn-primary" id="use-ncbi">Вставить</button>
+            </div>
+
+            <div class="form-group">
+                <label for="sequence">Последовательность ДНК</label>
+                <textarea id="sequence"
+                          placeholder="Вставьте последовательность (минимум 50 нуклеотидов)..."
+                          rows="4"></textarea>
+                <div class="sequence-stats">
+                    <span id="seq-length">0</span> нуклеотидов
+                </div>
+            </div>
+
+            <div class="params-grid">
+                <div class="form-group">
+                    <label for="tm">Tm (°C)</label>
+                    <input type="number" id="tm" value="60" min="50" max="70" step="0.5">
+                </div>
+
+                <div class="form-group">
+                    <label for="gc">GC (%)</label>
+                    <input type="number" id="gc" value="50" min="30" max="70">
+                </div>
+
+                <div class="form-group">
+                    <label for="length">Длина праймера</label>
+                    <select id="length">
+                        <option value="18">18</option>
+                        <option value="20">20</option>
+                        <option value="22" selected>22</option>
+                        <option value="24">24</option>
+                        <option value="26">26</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="actions">
+                <button class="btn btn-primary btn-block" id="design-btn">
+                    <span class="btn-icon">🎯</span>
+                    Подобрать праймеры
+                </button>
+
+                <div class="action-row">
+                    <button class="btn btn-outline" id="clear-btn">
+                        <span class="btn-icon">🗑️</span>
+                        Очистить
+                    </button>
+
+                    <button class="btn btn-outline" id="paste-btn">
+                        <span class="btn-icon">📋</span>
+                        Вставить
+                    </button>
+
+                    <button class="btn btn-outline" id="sample-btn">
+                        <span class="btn-icon">🧪</span>
+                        Пример
+                    </button>
+                </div>
+            </div>
+
+            <div class="progress" id="progress" style="display: none;">
+                <div class="progress-bar" id="progress-bar"></div>
+                <div class="progress-text" id="progress-text">Дизайн праймеров...</div>
+            </div>
+
+            <div id="visualization"></div>
+
+            <div class="results" id="results"></div>
+        </div>
+
+        <div class="tab-pane" id="tab-saved">
+            <div class="saved-list" id="saved-list">
+                <div class="empty-state">
+                    <span class="empty-icon">📭</span>
+                    <p>Нет сохраненных праймеров</p>
+                    <button class="btn btn-small btn-primary" onclick="switchTab('design')">
+                        Создать новые
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <div class="tab-pane" id="tab-history">
+            <div class="history-list" id="history-list">
+                <div class="empty-state">
+                    <span class="empty-icon">📜</span>
+                    <p>История пуста</p>
+                </div>
+            </div>
+        </div>
+
+        <div class="tab-pane" id="tab-settings">
+            <div class="settings-form">
+                <div class="form-group">
+                    <label class="checkbox">
+                        <input type="checkbox" id="auto-sync">
+                        <span>Автоматическая синхронизация</span>
+                    </label>
+                </div>
+
+                <div class="form-group">
+                    <label class="checkbox">
+                        <input type="checkbox" id="notifications">
+                        <span>Уведомления</span>
+                    </label>
+                </div>
+
+                <div class="form-group">
+                    <label class="checkbox">
+                        <input type="checkbox" id="auto-design">
+                        <span>Авто-дизайн на NCBI</span>
+                    </label>
+                </div>
+
+                <div class="form-group">
+                    <label for="theme">Тема</label>
+                    <select id="theme">
+                        <option value="light">Светлая</option>
+                        <option value="dark">Темная</option>
+                        <option value="system">Системная</option>
+                    </select>
+                </div>
+
+                <hr>
+
+                <div class="stats">
+                    <h4>Статистика</h4>
+                    <div class="stat-row">
+                        <span>Всего дизайнов:</span>
+                        <span id="stat-primers">0</span>
+                    </div>
+                    <div class="stat-row">
+                        <span>Сохранено:</span>
+                        <span id="stat-saved">0</span>
+                    </div>
+                    <div class="stat-row">
+                        <span>Дата установки:</span>
+                        <span id="stat-install">-</span>
+                    </div>
+                </div>
+
+                <button class="btn btn-outline btn-block" id="export-btn">
+                    📤 Экспортировать данные
+                </button>
+
+                <button class="btn btn-outline btn-block" id="clear-data-btn">
+                    🗑️ Очистить все данные
+                </button>
+            </div>
+        </div>
+
+        <div class="footer">
+            <div class="version">v2.0.0</div>
+            <div class="links">
+                <a href="#" id="feedback-link">Обратная связь</a>
+                <span class="separator">•</span>
+                <a href="#" id="help-link">Помощь</a>
+            </div>
+        </div>
+    </div>
+
+    <script src="popup.js" type="module"></script>
+</body>
+</html>
+

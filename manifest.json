@@ -1,0 +1,83 @@
+{
+  "manifest_version": 3,
+  "name": "PrimerDesigner Pro - PCR Primer Design",
+  "version": "2.0.0",
+  "description": "Мгновенный дизайн и оценка праймеров прямо на страницах NCBI, PubMed и других баз данных",
+  "author": "Bioinformatics Lab",
+
+  "action": {
+    "default_title": "PrimerDesigner (Ctrl+Shift+P)"
+  },
+
+  "permissions": [
+    "storage",
+    "activeTab",
+    "contextMenus",
+    "notifications",
+    "alarms",
+    "scripting",
+    "clipboardWrite"
+  ],
+
+  "host_permissions": [
+    "https://www.ncbi.nlm.nih.gov/*",
+    "https://www.uniprot.org/*",
+    "https://www.ensembl.org/*",
+    "https://your-api.example.com/*"
+  ],
+
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.ncbi.nlm.nih.gov/nuccore/*",
+        "https://www.ncbi.nlm.nih.gov/protein/*",
+        "https://www.ncbi.nlm.nih.gov/gene/*",
+        "https://www.uniprot.org/uniprot/*",
+        "https://www.ensembl.org/*"
+      ],
+      "js": [
+        "lib/heuristic-engine.js",
+        "content/ncbi-integration.js",
+        "content/content.js"
+      ],
+      "css": ["content/styles.css"],
+      "run_at": "document_idle"
+    }
+  ],
+
+  "background": {
+    "service_worker": "background/background.js",
+    "type": "module"
+  },
+
+  "options_ui": {
+    "page": "options/options.html",
+    "open_in_tab": true
+  },
+
+  "commands": {
+    "_execute_action": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+P",
+        "mac": "Command+Shift+P"
+      },
+      "description": "Открыть PrimerDesigner"
+    },
+    "quick-design": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+D",
+        "mac": "Command+Shift+D"
+      },
+      "description": "Быстрый дизайн для выделенного текста"
+    }
+  },
+
+  "web_accessible_resources": [{
+    "resources": [
+      "dashboard/dashboard.html",
+      "icons/icon-success.png",
+      "icons/icon128.png"
+    ],
+    "matches": ["<all_urls>"]
+  }]
+}
