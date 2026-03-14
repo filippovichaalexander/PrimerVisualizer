@@ -123,7 +123,14 @@
                 <span class="connection-warning-text">Сервер не ответил. Результаты получены локально (эвристика). Проверьте, что бэкенд запущен: <code>docker compose up</code>.</span>
             </div>
 
-            <div id="visualization"></div>
+            <div class="viz-zoom-toolbar">
+                <label class="viz-zoom-label" for="viz-zoom-slider">Масштаб</label>
+                <input type="range" id="viz-zoom-slider" class="viz-zoom-slider" min="0.5" max="10" step="0.1" value="1" title="Масштаб 50%–1000%">
+                <span id="viz-zoom-value" class="viz-zoom-value">100%</span>
+            </div>
+            <div class="viz-scroll-wrapper" id="visualization-scroll">
+                <div id="visualization"></div>
+            </div>
 
             <div class="results" id="results"></div>
         </div>

@@ -71,6 +71,18 @@ let overlapTab = 'all';
 let settings = {};
 let advancedSettings = {};
 let visualizer = null;
+let vizZoom = 1;
+let onVizRedraw = null;
+function setVizRedraw(fn) { onVizRedraw = fn; }
+
+function scrollVizToCenter() {
+    const scrollEl = document.getElementById('visualization-scroll');
+    if (!scrollEl || !visualizer?.canvas) return;
+    const seq = (currentSequence || '').replace(/\s/g, '');
+    if (!seq.length) return;
+    const centerX = 20 + (seq.length / 2) * visualizer.scale;
+    scrollEl.scrollLeft = Math.max(0, centerX - scrollEl.clientWidth / 2);
+}
 
 document.addEventListener('DOMContentLoaded', async () => {
     visualizer = new DNAVisualizer('visualization');
@@ -661,6 +673,19 @@ function setupEventListeners() {
         el.addEventListener('change', debouncedSaveAdvanced);
         el.addEventListener('input', debouncedSaveAdvanced);
     });
+
+    const vizZoomValueEl = document.getElementById('viz-zoom-value');
+    const vizZoomSlider = document.getElementById('viz-zoom-slider');
+    const updateVizZoomLabel = () => { if (vizZoomValueEl) vizZoomValueEl.textContent = Math.round(vizZoom * 100) + '%'; };
+    if (vizZoomSlider) {
+        vizZoomSlider.value = String(vizZoom);
+        vizZoomSlider.addEventListener('input', () => {
+            vizZoom = Math.max(0.5, Math.min(10, parseFloat(vizZoomSlider.value) || 1));
+            vizZoomSlider.value = String(vizZoom);
+            updateVizZoomLabel();
+            if (onVizRedraw) onVizRedraw();
+        });
+    }
 }
 
 function setupTabs() {
@@ -1017,6 +1042,7 @@ function displayResults(results, options = {}) {
             html += `
                 <div class="overlap-card overlap-${o.conflictLevel}" data-overlap-index="${idx}" data-overlap-page="${pageNum}" data-conflict-level="${o.conflictLevel}" role="button" tabindex="0" style="display: none;">
                     <div class="overlap-header">
+                        <span class="overlap-num" aria-label="Номер пересечения">№ ${idx + 1}</span>
                         <span class="overlap-pairs">
                             Пара #${getPairNumber(o.pair1_id)} ↔ Пара #${getPairNumber(o.pair2_id)}
                         </span>
@@ -1205,9 +1231,14 @@ function displayResults(results, options = {}) {
         });
     }
 
+    const vizZoomValueEl = document.getElementById('viz-zoom-value');
+    const vizZoomSlider = document.getElementById('viz-zoom-slider');
+    if (vizZoomValueEl) vizZoomValueEl.textContent = Math.round(vizZoom * 100) + '%';
+    if (vizZoomSlider) vizZoomSlider.value = String(vizZoom);
+
     if (visualizer && currentSequence) {
         const seq = currentSequence.replace(/\s/g, '');
-        visualizer.render(seq, results, -1);
+        visualizer.render(seq, results, -1, vizZoom);
         if (overlaps.length > 0 && visualizer.canvas) {
             const overlapViz = new OverlapVisualizer(visualizer.canvas);
             overlapViz.drawOverlaps(overlaps, seq.length);
@@ -1217,12 +1248,19 @@ function displayResults(results, options = {}) {
     const renderVisualization = (highlightedPairIndex = -1, overlapHighlightIndex = -1) => {
         if (!visualizer || !currentSequence) return;
         const seq = currentSequence.replace(/\s/g, '');
-        visualizer.render(seq, results, highlightedPairIndex);
+        visualizer.render(seq, results, highlightedPairIndex, vizZoom);
         if (overlaps.length > 0 && visualizer.canvas) {
             const ov = new OverlapVisualizer(visualizer.canvas);
             ov.drawOverlaps(overlaps, seq.length, overlapHighlightIndex);
         }
     };
+
+    setVizRedraw(() => {
+        const pairIdx = document.querySelector('.result-card.result-card-highlighted')?.dataset.pairIndex;
+        const overlapIdx = document.querySelector('.overlap-card.highlighted')?.dataset.overlapIndex;
+        renderVisualization(pairIdx != null ? parseInt(pairIdx, 10) : -1, overlapIdx != null ? parseInt(overlapIdx, 10) : -1);
+        scrollVizToCenter();
+    });
 
     document.querySelectorAll('.result-card').forEach((card) => {
         card.addEventListener('click', (e) => {
@@ -1246,12 +1284,13 @@ function displayResults(results, options = {}) {
             const parsed = pairIdx != null ? parseInt(pairIdx, 10) : -1;
             renderVisualization(parsed >= 0 ? parsed : -1, highlightIndex);
         };
-        const showOverlapDetail = (o) => {
+        const showOverlapDetail = (o, overlapIndex = 0) => {
             const warnings = Array.isArray(o.warning) ? o.warning : (o.warning ? [o.warning] : []);
             const conflictLabels = { low: 'Низкий', medium: 'Средний', high: 'Высокий' };
+            const num = (overlapIndex != null ? overlapIndex : 0) + 1;
             let html = `
                 <div class="overlap-detail-inner">
-                    <h4>Характеристики пересечения</h4>
+                    <h4>Характеристики пересечения № ${num}</h4>
                     <ul class="overlap-detail-list">
                         <li><strong>Пары:</strong> #${getPairNumber(o.pair1_id)} ↔ #${getPairNumber(o.pair2_id)}</li>
                         <li><strong>Тип:</strong> ${formatOverlapType(o.type)}</li>
@@ -1275,7 +1314,7 @@ function displayResults(results, options = {}) {
                 document.querySelectorAll('.overlap-card').forEach(c => c.classList.remove('highlighted'));
                 card.classList.add('highlighted');
                 renderHighlight(idx);
-                showOverlapDetail(overlaps[idx]);
+                showOverlapDetail(overlaps[idx], idx);
                 const vizEl = document.getElementById('visualization');
                 if (vizEl) {
                     vizEl.classList.add('visualization-overlap-highlighted');
@@ -1665,11 +1704,15 @@ overlapStyles.textContent = `
     
     .overlap-header {
         display: flex;
+        align-items: center;
         justify-content: space-between;
+        gap: 8px;
+        flex-wrap: wrap;
         align-items: center;
         margin-bottom: 4px;
     }
     
+    .overlap-num { font-weight: 700; font-size: 12px; color: #475569; background: #f1f5f9; padding: 2px 6px; border-radius: 4px; flex-shrink: 0; }
     .overlap-pairs {
         font-weight: 600;
         font-size: 13px;
@@ -1724,9 +1767,16 @@ statusStyles.textContent = `
     .risk-explanation { margin: 12px 0; padding: 12px; background: #fffbeb; border: 1px solid #f59e0b; border-radius: 8px; font-size: 12px; color: #92400e; }
     .same-forward-indicator { margin: 0 0 8px 0; padding: 6px 10px; background: #eff6ff; border-left: 3px solid #3b82f6; border-radius: 4px; font-size: 11px; color: #1d4ed8; }
     .result-card.result-card-highlighted { background: rgba(239, 246, 255, 0.6); }
-    #visualization { overflow: hidden; max-width: 100%; position: relative; z-index: 0; }
+    .viz-zoom-toolbar { display: flex; align-items: center; gap: 10px; margin: 12px 0 4px 0; }
+    .viz-zoom-label { font-size: 12px; color: #64748b; }
+    .viz-zoom-slider { -webkit-appearance: none; appearance: none; flex: 1; min-width: 80px; max-width: 200px; height: 6px; margin: 0; background: #e2e8f0; border-radius: 3px; outline: none; }
+    .viz-zoom-slider::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 14px; height: 14px; border-radius: 50%; background: #3b82f6; cursor: pointer; }
+    .viz-zoom-slider::-moz-range-thumb { width: 14px; height: 14px; border-radius: 50%; background: #3b82f6; cursor: pointer; border: none; }
+    .viz-zoom-value { font-size: 12px; color: #64748b; min-width: 44px; }
+    .viz-scroll-wrapper { width: 100%; max-width: 100%; overflow-x: auto; overflow-y: hidden; margin: 0; -webkit-overflow-scrolling: touch; box-sizing: border-box; }
+    #visualization { overflow: visible; position: relative; z-index: 0; display: inline-block; min-width: min-content; box-sizing: border-box; }
     #visualization.visualization-overlap-highlighted { z-index: 5; }
-    #visualization canvas { max-width: 100%; box-sizing: border-box; }
+    .viz-scroll-wrapper #visualization canvas { box-sizing: border-box; flex-shrink: 0; }
     .overlap-section { position: relative; z-index: 2; }
     .overlap-card { position: relative; z-index: 1; pointer-events: auto; }
 `;

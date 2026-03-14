@@ -17,10 +17,11 @@ export class DNAVisualizer {
         this.highlightedPairIndex = -1;
     }
 
-    render(sequence, pairs, highlightedPairIndex = -1) {
+    render(sequence, pairs, highlightedPairIndex = -1, zoom = 1) {
         if (!this.container) return;
         this.sequence = sequence;
         this.highlightedPairIndex = highlightedPairIndex;
+        this.zoom = typeof zoom === 'number' && zoom > 0 ? zoom : 1;
         this.clear();
         this.createCanvas();
         this.drawDNALine();
@@ -33,33 +34,41 @@ export class DNAVisualizer {
 
     createCanvas() {
         if (!this.container) return;
+        const scrollParent = this.container.parentElement;
+        const viewW = scrollParent ? scrollParent.clientWidth : (this.container.clientWidth || 400);
+        const baseW = Math.max(1, viewW - 32);
+        const zoom = typeof this.zoom === 'number' && this.zoom > 0 ? this.zoom : 1;
+        const seqLength = Math.max(this.sequence.length, 1);
+        const baseScale = (baseW - 40) / seqLength;
+        this.scale = baseScale * zoom;
+        const rightPad = 24;
+        const canvasW = Math.min(8192, Math.max(baseW, Math.ceil(20 + seqLength * this.scale + rightPad)));
+
         this.canvas = document.createElement('canvas');
-        const maxW = Math.max(1, (this.container.clientWidth || 400) - 32);
-        this.canvas.width = maxW;
+        this.canvas.width = canvasW;
         this.canvas.height = 150;
-        this.canvas.style.cssText = 'display: block; max-width: 100%; height: 150px; border-radius: 8px; background: #f0f9ff; margin: 16px 0; border: 1px solid #e0f2fe; box-sizing: border-box;';
+        this.canvas.style.cssText = 'display: block; width: ' + canvasW + 'px; height: 150px; border-radius: 8px; background: #f0f9ff; margin: 16px 0; border: 1px solid #e0f2fe; box-sizing: border-box;';
 
         this.ctx = this.canvas.getContext('2d');
         this.container.appendChild(this.canvas);
-
-        const seqLength = Math.max(this.sequence.length, 1);
-        this.scale = (this.canvas.width - 40) / seqLength;
+        this.container.style.minWidth = canvasW + 'px';
     }
 
     drawDNALine() {
         const ctx = this.ctx;
         const width = this.canvas.width;
+        const rightEdge = width - 20;
 
         ctx.beginPath();
         ctx.strokeStyle = '#bae6fd';
         ctx.lineWidth = 2;
         ctx.setLineDash([]);
         ctx.moveTo(20, 75);
-        ctx.lineTo(width - 20, 75);
+        ctx.lineTo(rightEdge, 75);
         ctx.stroke();
 
         ctx.fillStyle = '#7dd3fc';
-        for (let x = 30; x < width - 20; x += 15) {
+        for (let x = 30; x < rightEdge; x += 15) {
             ctx.beginPath();
             ctx.arc(x, 75, 2, 0, Math.PI * 2);
             ctx.fill();
@@ -188,23 +197,25 @@ export class OverlapVisualizer {
             switch (level) {
                 case 'high':
                     return {
-                        fill: isHighlighted ? 'rgba(244, 114, 182, 0.55)' : 'rgba(251, 207, 232, 0.5)',
+                        fill: isHighlighted ? 'rgba(244, 114, 182, 0.38)' : 'rgba(251, 207, 232, 0.28)',
                         stroke: 'rgba(219, 39, 119, 0.85)'
                     };
                 case 'medium':
                     return {
-                        fill: isHighlighted ? 'rgba(250, 204, 21, 0.55)' : 'rgba(254, 240, 138, 0.5)',
+                        fill: isHighlighted ? 'rgba(250, 204, 21, 0.38)' : 'rgba(254, 240, 138, 0.28)',
                         stroke: 'rgba(202, 138, 4, 0.85)'
                     };
                 default:
                     return {
-                        fill: isHighlighted ? 'rgba(74, 222, 128, 0.55)' : 'rgba(187, 247, 208, 0.5)',
+                        fill: isHighlighted ? 'rgba(74, 222, 128, 0.38)' : 'rgba(187, 247, 208, 0.28)',
                         stroke: 'rgba(22, 163, 74, 0.85)'
                     };
             }
         };
 
-        const drawOne = (overlap, idx, isHighlighted) => {
+        const segmentData = [];
+
+        const drawOneSegment = (overlap, idx, isHighlighted) => {
             const colors = getColors(overlap.conflictLevel || 'low', isHighlighted);
             const x1 = 20 + overlap.overlapStart * scale;
             const x2 = 20 + overlap.overlapEnd * scale;
@@ -226,23 +237,31 @@ export class OverlapVisualizer {
                 this.ctx.strokeRect(x1 - pad, 20 - pad, w + pad * 2, 110 + pad * 2);
             }
 
-            this.ctx.beginPath();
-            this.ctx.fillStyle = colors.stroke;
             const cx = (x1 + x2) / 2;
-            this.ctx.arc(cx, 75, isHighlighted ? 8 : 5, 0, Math.PI * 2);
-            this.ctx.fill();
-
-            this.hitAreas.push({ x: cx - 10, y: 65, width: 20, height: 20, overlap, index: idx });
+            const cy = 75;
+            segmentData.push({ overlap, idx, isHighlighted, cx, cy, stroke: colors.stroke });
         };
 
         overlaps.forEach((overlap, idx) => {
             if (idx === highlightedIndex) return;
-            drawOne(overlap, idx, false);
+            drawOneSegment(overlap, idx, false);
         });
-
         if (highlightedIndex >= 0 && highlightedIndex < overlaps.length) {
-            drawOne(overlaps[highlightedIndex], highlightedIndex, true);
+            drawOneSegment(overlaps[highlightedIndex], highlightedIndex, true);
         }
+
+        segmentData.forEach(({ overlap, idx, cx, cy, stroke, isHighlighted }) => {
+            const pointRadius = isHighlighted ? 10 : 8;
+            const hitRadius = 14;
+            this.hitAreas.push({ cx, cy, hitRadius, overlap, index: idx });
+            this.ctx.beginPath();
+            this.ctx.fillStyle = stroke;
+            this.ctx.arc(cx, cy, pointRadius, 0, Math.PI * 2);
+            this.ctx.fill();
+            this.ctx.strokeStyle = 'rgba(255, 255, 255, 0.95)';
+            this.ctx.lineWidth = 2.5;
+            this.ctx.stroke();
+        });
 
         this.canvas.removeEventListener('mousemove', this._boundMouseMove);
         this.canvas.addEventListener('mousemove', this._boundMouseMove);
@@ -250,27 +269,33 @@ export class OverlapVisualizer {
 
     _onMouseMove(e) {
         const rect = this.canvas.getBoundingClientRect();
-        const mouseX = e.clientX - rect.left;
-        const mouseY = e.clientY - rect.top;
+        const scaleX = this.canvas.width / rect.width;
+        const scaleY = this.canvas.height / rect.height;
+        const mouseX = (e.clientX - rect.left) * scaleX;
+        const mouseY = (e.clientY - rect.top) * scaleY;
 
         for (const area of this.hitAreas) {
-            if (mouseX >= area.x && mouseX <= area.x + area.width &&
-                mouseY >= area.y && mouseY <= area.y + area.height) {
-                this.showOverlapTooltip(area.overlap, mouseX + rect.left, mouseY + rect.top);
+            const dx = mouseX - area.cx;
+            const dy = mouseY - area.cy;
+            if (dx * dx + dy * dy <= area.hitRadius * area.hitRadius) {
+                this.canvas.style.cursor = 'pointer';
+                this.showOverlapTooltip(area.overlap, e.clientX, e.clientY, area.index);
                 return;
             }
         }
+        this.canvas.style.cursor = 'default';
         const tooltip = document.getElementById('overlap-tooltip');
         if (tooltip) tooltip.style.display = 'none';
     }
 
-    showOverlapTooltip(overlap, x, y) {
+    showOverlapTooltip(overlap, x, y, overlapIndex = 0) {
         const tooltip = document.getElementById('overlap-tooltip') || this.createTooltip();
         const warnings = Array.isArray(overlap.warning) ? overlap.warning : (overlap.warning ? [overlap.warning] : []);
+        const num = (overlapIndex != null ? overlapIndex : 0) + 1;
 
         let html = `
             <div class="overlap-tooltip">
-                <h4>🔍 Пересечение праймеров</h4>
+                <h4>🔍 Пересечение праймеров № ${num}</h4>
                 <p><strong>Тип:</strong> ${this.formatOverlapType(overlap.type)}</p>
                 <p><strong>Длина перекрытия:</strong> ${overlap.overlapLength} п.н.</p>
                 <p><strong>Конфликт:</strong> ${this.formatConflictLevel(overlap.conflictLevel)}</p>
@@ -289,8 +314,8 @@ export class OverlapVisualizer {
         html += '</div>';
 
         tooltip.innerHTML = html;
-        tooltip.style.left = (x + 20) + 'px';
-        tooltip.style.top = y + 'px';
+        tooltip.style.left = (x + 16) + 'px';
+        tooltip.style.top = (y + 8) + 'px';
         tooltip.style.display = 'block';
     }
 
