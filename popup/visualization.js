@@ -1,3 +1,12 @@
+// Мягкая пастельная палитра с прозрачностью (fill и stroke с alpha)
+const PASTEL_PALETTE = [
+    { fill: 'rgba(167, 243, 208, 0.55)', stroke: 'rgba(5, 150, 105, 0.75)' },   // мягкий зелёный
+    { fill: 'rgba(191, 219, 254, 0.55)', stroke: 'rgba(37, 99, 235, 0.75)' },   // мягкий синий
+    { fill: 'rgba(253, 230, 138, 0.55)', stroke: 'rgba(217, 119, 6, 0.75)' },   // мягкий янтарный
+    { fill: 'rgba(233, 213, 255, 0.55)', stroke: 'rgba(124, 58, 237, 0.75)' },   // мягкий фиолетовый
+    { fill: 'rgba(254, 202, 202, 0.5)',  stroke: 'rgba(185, 28, 28, 0.7)' },    // мягкий красный (не яркий)
+];
+
 export class DNAVisualizer {
     constructor(containerId) {
         this.container = document.getElementById(containerId);
@@ -5,15 +14,17 @@ export class DNAVisualizer {
         this.ctx = null;
         this.sequence = '';
         this.scale = 1;
+        this.highlightedPairIndex = -1;
     }
 
-    render(sequence, pairs) {
+    render(sequence, pairs, highlightedPairIndex = -1) {
         if (!this.container) return;
         this.sequence = sequence;
+        this.highlightedPairIndex = highlightedPairIndex;
         this.clear();
         this.createCanvas();
         this.drawDNALine();
-        this.drawPrimers(pairs || []);
+        this.drawPrimers(pairs || [], highlightedPairIndex);
     }
 
     clear() {
@@ -21,12 +32,12 @@ export class DNAVisualizer {
     }
 
     createCanvas() {
+        if (!this.container) return;
         this.canvas = document.createElement('canvas');
-        this.canvas.width = this.container.clientWidth - 32;
+        const maxW = Math.max(1, (this.container.clientWidth || 400) - 32);
+        this.canvas.width = maxW;
         this.canvas.height = 150;
-        this.canvas.style.borderRadius = '8px';
-        this.canvas.style.background = '#f8fafc';
-        this.canvas.style.margin = '16px 0';
+        this.canvas.style.cssText = 'display: block; max-width: 100%; height: 150px; border-radius: 8px; background: #f0f9ff; margin: 16px 0; border: 1px solid #e0f2fe; box-sizing: border-box;';
 
         this.ctx = this.canvas.getContext('2d');
         this.container.appendChild(this.canvas);
@@ -40,14 +51,14 @@ export class DNAVisualizer {
         const width = this.canvas.width;
 
         ctx.beginPath();
-        ctx.strokeStyle = '#64748b';
+        ctx.strokeStyle = '#bae6fd';
         ctx.lineWidth = 2;
         ctx.setLineDash([]);
         ctx.moveTo(20, 75);
         ctx.lineTo(width - 20, 75);
         ctx.stroke();
 
-        ctx.fillStyle = '#94a3b8';
+        ctx.fillStyle = '#7dd3fc';
         for (let x = 30; x < width - 20; x += 15) {
             ctx.beginPath();
             ctx.arc(x, 75, 2, 0, Math.PI * 2);
@@ -55,45 +66,63 @@ export class DNAVisualizer {
         }
     }
 
-    drawPrimers(pairs) {
+    drawPrimers(pairs, highlightedPairIndex = -1) {
         const ctx = this.ctx;
-        const width = this.canvas.width;
         if (!this.sequence) return;
 
-        pairs.slice(0, 3).forEach((pair, idx) => {
-            const color = idx === 0 ? '#22c55e' : idx === 1 ? '#3b82f6' : '#f59e0b';
+        pairs.slice(0, 5).forEach((pair, idx) => {
+            const palette = PASTEL_PALETTE[idx % PASTEL_PALETTE.length];
+            const isHighlighted = idx === highlightedPairIndex;
 
             this.drawPrimer(
                 pair.forward.start,
                 pair.forward.end,
                 50,
-                color,
-                'right'
+                palette.fill,
+                palette.stroke,
+                'right',
+                isHighlighted
             );
 
             this.drawPrimer(
                 pair.reverse.start,
                 pair.reverse.end,
                 100,
-                color,
-                'left'
+                palette.fill,
+                palette.stroke,
+                'left',
+                isHighlighted
             );
         });
     }
 
-    drawPrimer(start, end, y, color, direction) {
+    drawPrimer(start, end, y, fillColor, strokeColor, direction, isHighlighted = false) {
         const ctx = this.ctx;
         const x1 = 20 + start * this.scale;
         const x2 = 20 + end * this.scale;
+        const w = x2 - x1;
+        const h = 24;
 
-        ctx.fillStyle = this.withAlpha(color, 0.15);
-        ctx.fillRect(x1, y - 12, x2 - x1, 24);
+        const fill = typeof fillColor === 'string' && fillColor.startsWith('rgba') ? fillColor : this.hexToRgba(fillColor, 0.55);
+        const stroke = typeof strokeColor === 'string' && strokeColor.startsWith('rgba') ? strokeColor : this.hexToRgba(strokeColor, 0.75);
 
-        ctx.strokeStyle = color;
-        ctx.lineWidth = 2;
-        ctx.strokeRect(x1, y - 12, x2 - x1, 24);
+        ctx.fillStyle = fill;
+        ctx.fillRect(x1, y - 12, w, h);
 
-        ctx.fillStyle = color;
+        ctx.strokeStyle = stroke;
+        ctx.lineWidth = 1.5;
+        ctx.strokeRect(x1, y - 12, w, h);
+
+        if (isHighlighted) {
+            const outPad = 10;
+            ctx.strokeStyle = 'rgba(30, 64, 175, 0.9)';
+            ctx.lineWidth = 6;
+            ctx.setLineDash([]);
+            ctx.strokeRect(x1 - outPad, y - 12 - outPad, w + outPad * 2, h + outPad * 2);
+        }
+
+        const arrowColor = typeof strokeColor === 'string' && strokeColor.startsWith('rgba') ? strokeColor : this.hexToRgba(strokeColor, 0.85);
+        ctx.fillStyle = arrowColor;
         if (direction === 'right') {
             ctx.beginPath();
             ctx.moveTo(x2 - 10, y);
@@ -113,6 +142,15 @@ export class DNAVisualizer {
         }
     }
 
+    hexToRgba(hex, alpha) {
+        if (typeof hex !== 'string' || !hex.startsWith('#')) return hex;
+        const c = hex.replace('#', '');
+        const r = parseInt(c.substring(0, 2), 16);
+        const g = parseInt(c.substring(2, 4), 16);
+        const b = parseInt(c.substring(4, 6), 16);
+        return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+    }
+
     withAlpha(hex, alpha) {
         const c = hex.replace('#', '');
         const r = parseInt(c.substring(0, 2), 16);
@@ -123,80 +161,113 @@ export class DNAVisualizer {
 }
 
 
-// popup/visualization.js - добавить отображение пересечений
+// Отображение пересечений праймеров на канвасе (опционально используется из popup)
 
-class OverlapVisualizer {
+export class OverlapVisualizer {
     constructor(canvas) {
         this.canvas = canvas;
         this.ctx = canvas.getContext('2d');
+        this.hitAreas = [];
+        this._boundMouseMove = this._onMouseMove.bind(this);
     }
 
-    drawOverlaps(overlaps, sequenceLength, pairs) {
-        if (!overlaps || overlaps.length === 0) return;
-        
+    drawOverlaps(overlaps, sequenceLength, highlightedIndex = -1) {
+        if (!overlaps || overlaps.length === 0) {
+            this.hitAreas = [];
+            return;
+        }
+
+        this._overlaps = overlaps;
+        this._highlightedIndex = highlightedIndex;
+
         const width = this.canvas.width;
-        const scale = (width - 40) / sequenceLength;
-        
-        overlaps.forEach(overlap => {
-            // Цвет в зависимости от уровня конфликта
-            let color;
-            switch (overlap.conflictLevel) {
-                case 'high': color = '#ef4444'; break;
-                case 'medium': color = '#f59e0b'; break;
-                default: color = '#3b82f6'; break;
+        const scale = (width - 40) / Math.max(sequenceLength, 1);
+        this.hitAreas = [];
+
+        const getColors = (level, isHighlighted) => {
+            switch (level) {
+                case 'high':
+                    return {
+                        fill: isHighlighted ? 'rgba(244, 114, 182, 0.55)' : 'rgba(251, 207, 232, 0.5)',
+                        stroke: 'rgba(219, 39, 119, 0.85)'
+                    };
+                case 'medium':
+                    return {
+                        fill: isHighlighted ? 'rgba(250, 204, 21, 0.55)' : 'rgba(254, 240, 138, 0.5)',
+                        stroke: 'rgba(202, 138, 4, 0.85)'
+                    };
+                default:
+                    return {
+                        fill: isHighlighted ? 'rgba(74, 222, 128, 0.55)' : 'rgba(187, 247, 208, 0.5)',
+                        stroke: 'rgba(22, 163, 74, 0.85)'
+                    };
             }
-            
-            // Рисуем зону перекрытия
+        };
+
+        const drawOne = (overlap, idx, isHighlighted) => {
+            const colors = getColors(overlap.conflictLevel || 'low', isHighlighted);
             const x1 = 20 + overlap.overlapStart * scale;
             const x2 = 20 + overlap.overlapEnd * scale;
-            
-            // Полупрозрачная заливка
-            this.ctx.fillStyle = color + '30';
-            this.ctx.fillRect(x1, 20, x2 - x1, 110);
-            
-            // Рамка
-            this.ctx.strokeStyle = color;
-            this.ctx.lineWidth = 2;
-            this.ctx.setLineDash([5, 3]);
-            this.ctx.strokeRect(x1, 20, x2 - x1, 110);
+            const w = x2 - x1;
+
+            this.ctx.fillStyle = colors.fill;
+            this.ctx.fillRect(x1, 20, w, 110);
+
+            this.ctx.strokeStyle = colors.stroke;
+            this.ctx.lineWidth = isHighlighted ? 2 : 1.5;
+            this.ctx.setLineDash(isHighlighted ? [] : [4, 3]);
+            this.ctx.strokeRect(x1, 20, w, 110);
             this.ctx.setLineDash([]);
-            
-            // Маркер пересечения
+
+            if (isHighlighted) {
+                const pad = 4;
+                this.ctx.strokeStyle = 'rgba(30, 64, 175, 0.95)';
+                this.ctx.lineWidth = 6;
+                this.ctx.strokeRect(x1 - pad, 20 - pad, w + pad * 2, 110 + pad * 2);
+            }
+
             this.ctx.beginPath();
-            this.ctx.fillStyle = color;
-            this.ctx.arc((x1 + x2) / 2, 75, 5, 0, Math.PI * 2);
+            this.ctx.fillStyle = colors.stroke;
+            const cx = (x1 + x2) / 2;
+            this.ctx.arc(cx, 75, isHighlighted ? 8 : 5, 0, Math.PI * 2);
             this.ctx.fill();
-            
-            // Подпись при наведении
-            this.addOverlayTooltip(overlap, (x1 + x2) / 2, 75);
+
+            this.hitAreas.push({ x: cx - 10, y: 65, width: 20, height: 20, overlap, index: idx });
+        };
+
+        overlaps.forEach((overlap, idx) => {
+            if (idx === highlightedIndex) return;
+            drawOne(overlap, idx, false);
         });
+
+        if (highlightedIndex >= 0 && highlightedIndex < overlaps.length) {
+            drawOne(overlaps[highlightedIndex], highlightedIndex, true);
+        }
+
+        this.canvas.removeEventListener('mousemove', this._boundMouseMove);
+        this.canvas.addEventListener('mousemove', this._boundMouseMove);
     }
 
-    addOverlayTooltip(overlap, x, y) {
-        // Создаем область для ховера
-        const hitArea = {
-            x: x - 10,
-            y: y - 10,
-            width: 20,
-            height: 20,
-            overlap: overlap
-        };
-        
-        this.canvas.addEventListener('mousemove', (e) => {
-            const rect = this.canvas.getBoundingClientRect();
-            const mouseX = e.clientX - rect.left;
-            const mouseY = e.clientY - rect.top;
-            
-            if (mouseX >= hitArea.x && mouseX <= hitArea.x + hitArea.width &&
-                mouseY >= hitArea.y && mouseY <= hitArea.y + hitArea.height) {
-                this.showOverlapTooltip(overlap, mouseX, mouseY);
+    _onMouseMove(e) {
+        const rect = this.canvas.getBoundingClientRect();
+        const mouseX = e.clientX - rect.left;
+        const mouseY = e.clientY - rect.top;
+
+        for (const area of this.hitAreas) {
+            if (mouseX >= area.x && mouseX <= area.x + area.width &&
+                mouseY >= area.y && mouseY <= area.y + area.height) {
+                this.showOverlapTooltip(area.overlap, mouseX + rect.left, mouseY + rect.top);
+                return;
             }
-        });
+        }
+        const tooltip = document.getElementById('overlap-tooltip');
+        if (tooltip) tooltip.style.display = 'none';
     }
 
     showOverlapTooltip(overlap, x, y) {
         const tooltip = document.getElementById('overlap-tooltip') || this.createTooltip();
-        
+        const warnings = Array.isArray(overlap.warning) ? overlap.warning : (overlap.warning ? [overlap.warning] : []);
+
         let html = `
             <div class="overlap-tooltip">
                 <h4>🔍 Пересечение праймеров</h4>
@@ -204,7 +275,7 @@ class OverlapVisualizer {
                 <p><strong>Длина перекрытия:</strong> ${overlap.overlapLength} п.н.</p>
                 <p><strong>Конфликт:</strong> ${this.formatConflictLevel(overlap.conflictLevel)}</p>
         `;
-        
+
         if (overlap.complementaryRisk?.hasComplementarity) {
             html += `
                 <p class="warning">
@@ -212,15 +283,13 @@ class OverlapVisualizer {
                 </p>
             `;
         }
-        
-        if (overlap.warning && overlap.warning.length > 0) {
-            html += `<p class="warning">${overlap.warning[0]}</p>`;
-        }
-        
+
+        warnings.forEach(w => { html += `<p class="warning">${w}</p>`; });
+
         html += '</div>';
-        
+
         tooltip.innerHTML = html;
-        tooltip.style.left = x + 20 + 'px';
+        tooltip.style.left = (x + 20) + 'px';
         tooltip.style.top = y + 'px';
         tooltip.style.display = 'block';
     }

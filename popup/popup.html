@@ -4,6 +4,25 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <link rel="stylesheet" href="popup.css">
+    <style>
+        .overlap-card { cursor: pointer; transition: box-shadow 0.2s, border-color 0.2s; }
+        .overlap-card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+        .overlap-card.highlighted { box-shadow: 0 0 0 2px var(--color-primary, #3b82f6); border-color: var(--color-primary, #3b82f6); }
+        .overlap-hint { font-size: 11px; color: #64748b; margin: 4px 0 8px; }
+        .overlap-detail { margin-top: 10px; padding: 10px; background: #f8fafc; border-radius: 8px; border: 1px solid #e2e8f0; }
+        .overlap-detail-inner h4 { margin: 0 0 8px; font-size: 13px; }
+        .overlap-detail-list { margin: 0; padding-left: 18px; font-size: 12px; line-height: 1.5; }
+        .overlap-detail-warnings { margin-top: 8px; }
+        .overlap-tabs { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 10px; }
+        .overlap-tab { padding: 6px 12px; font-size: 12px; border: 1px solid #e2e8f0; border-radius: 6px; background: #f8fafc; cursor: pointer; color: #475569; }
+        .overlap-tab:hover { background: #f1f5f9; }
+        .overlap-tab.active { background: #3b82f6; color: #fff; border-color: #3b82f6; }
+        .pagination-bar { display: flex; align-items: center; justify-content: center; gap: 12px; margin: 12px 0; padding: 8px 0; flex-wrap: wrap; }
+        .pagination-btn { padding: 6px 12px; font-size: 12px; border: 1px solid #e2e8f0; border-radius: 6px; background: #fff; cursor: pointer; }
+        .pagination-btn:hover:not(:disabled) { background: #f1f5f9; }
+        .pagination-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+        .pagination-info { font-size: 12px; color: #64748b; }
+    </style>
 </head>
 <body>
     <div class="container">
@@ -12,9 +31,13 @@
                 <span class="logo-icon">🧬</span>
                 <span class="logo-text">PrimerDesigner</span>
             </div>
-            <div class="status">
-                <span class="status-indicator online" id="status-indicator"></span>
-                <span class="status-text" id="status-text">Онлайн</span>
+            <div class="status-block">
+                <div class="status-row">
+                    <span class="status-indicator online" id="status-indicator" title="Сеть"></span>
+                    <span class="status-text" id="status-text">Онлайн</span>
+                    <span class="status-mode" id="status-mode">Сервер</span>
+                </div>
+                <button type="button" class="status-mode-toggle" id="mode-toggle" title="Переключить режим расчёта">Переключить на локально</button>
             </div>
         </div>
 
@@ -30,12 +53,13 @@
                 <span class="quick-insert-icon">📋</span>
                 <span class="quick-insert-text">Есть последовательность с NCBI</span>
                 <button class="btn btn-small btn-primary" id="use-ncbi">Вставить</button>
+                <button class="btn btn-small btn-primary" id="use-ncbi-and-design">Вставить и подобрать</button>
             </div>
 
             <div class="form-group">
                 <label for="sequence">Последовательность ДНК</label>
                 <textarea id="sequence"
-                          placeholder="Вставьте последовательность (минимум 50 нуклеотидов)..."
+                          placeholder="Вставьте последовательность (минимум 50 нуклеотидов), затем нажмите «Подобрать праймеры»..."
                           rows="4"></textarea>
                 <div class="sequence-stats">
                     <span id="seq-length">0</span> нуклеотидов
@@ -94,6 +118,11 @@
                 <div class="progress-text" id="progress-text">Дизайн праймеров...</div>
             </div>
 
+            <div class="connection-warning" id="connection-warning" role="alert" style="display: none;">
+                <span class="connection-warning-icon">⚠️</span>
+                <span class="connection-warning-text">Сервер не ответил. Результаты получены локально (эвристика). Проверьте, что бэкенд запущен: <code>docker compose up</code>.</span>
+            </div>
+
             <div id="visualization"></div>
 
             <div class="results" id="results"></div>
@@ -144,6 +173,13 @@
                 </div>
 
                 <div class="form-group">
+                    <label class="checkbox">
+                        <input type="checkbox" id="force-offline">
+                        <span>Принудительно оффлайн (не обращаться к серверу)</span>
+                    </label>
+                </div>
+
+                <div class="form-group">
                     <label for="theme">Тема</label>
                     <select id="theme">
                         <option value="light">Светлая</option>
@@ -151,6 +187,293 @@
                         <option value="system">Системная</option>
                     </select>
                 </div>
+
+                <details class="advanced-settings-details">
+                    <summary class="advanced-settings-summary">⚙️ Расширенные настройки дизайна</summary>
+
+                    <div class="advanced-settings">
+                        <div class="slider-group">
+                            <label class="slider-label">
+                                Шаг поиска праймеров:
+                                <span id="step-value" class="slider-value">3</span> нуклеотидов
+                            </label>
+                            <input type="range" id="step-slider" class="slider"
+                                   min="1" max="10" value="3" step="1">
+                            <div class="slider-hint">
+                                <small>Меньше = точнее (медленнее), больше = быстрее (приблизительно)</small>
+                            </div>
+                        </div>
+
+                        <div class="slider-group">
+                            <label class="slider-label">
+                                Мин. расстояние между праймерами:
+                                <span id="min-distance-value" class="slider-value">50</span> п.н.
+                            </label>
+                            <input type="range" id="min-distance-slider" class="slider"
+                                   min="20" max="200" value="50" step="10">
+                        </div>
+
+                        <div class="range-group">
+                            <label>Размер ПЦР продукта (п.н.):</label>
+                            <div class="range-inputs">
+                                <div class="range-input-wrapper">
+                                    <span class="range-label">от</span>
+                                    <input type="number" id="min-product-size" class="range-number"
+                                           value="80" min="50" max="1000" step="10">
+                                </div>
+                                <div class="range-input-wrapper">
+                                    <span class="range-label">до</span>
+                                    <input type="number" id="max-product-size" class="range-number"
+                                           value="500" min="100" max="2000" step="10">
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="thresholds-group">
+                            <label>Пороги риска (% перекрытия):</label>
+                            <div class="threshold-item">
+                                <span class="threshold-label low">🟢 Низкий:</span>
+                                <span class="threshold-value" id="low-threshold-value">0-15%</span>
+                            </div>
+                            <div class="threshold-item with-slider">
+                                <span class="threshold-label medium">🟡 Средний:</span>
+                                <input type="range" id="medium-threshold-min" class="threshold-slider-min"
+                                       min="5" max="30" value="15" step="1">
+                                <span class="threshold-dash">–</span>
+                                <input type="range" id="medium-threshold-max" class="threshold-slider-max"
+                                       min="20" max="50" value="40" step="1">
+                                <span class="threshold-value" id="medium-threshold-value">15-40%</span>
+                            </div>
+                            <div class="threshold-item">
+                                <span class="threshold-label high">🔴 Высокий:</span>
+                                <span class="threshold-value" id="high-threshold-value">>40%</span>
+                                <input type="range" id="high-threshold-slider" class="threshold-slider"
+                                       min="30" max="80" value="40" step="1">
+                            </div>
+                        </div>
+
+                        <div class="tm-settings-group">
+                            <label>Допустимое отклонение Tm:</label>
+                            <div class="slider-group">
+                                <input type="range" id="tm-tolerance-slider" class="slider"
+                                       min="1" max="10" value="3" step="0.5">
+                                <span id="tm-tolerance-value" class="slider-value">±3°C</span>
+                            </div>
+                        </div>
+
+                        <div class="gc-settings-group">
+                            <label>Допустимый GC состав (%):</label>
+                            <div class="range-inputs">
+                                <div class="range-input-wrapper">
+                                    <span class="range-label">мин</span>
+                                    <input type="number" id="min-gc" class="range-number"
+                                           value="35" min="20" max="50" step="1">
+                                </div>
+                                <div class="range-input-wrapper">
+                                    <span class="range-label">макс</span>
+                                    <input type="number" id="max-gc" class="range-number"
+                                           value="65" min="50" max="80" step="1">
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="presets-group">
+                            <label>📋 Быстрые профили:</label>
+                            <div class="preset-buttons">
+                                <button type="button" class="preset-btn" data-preset="qpcr">qPCR</button>
+                                <button type="button" class="preset-btn" data-preset="cloning">Клонирование</button>
+                                <button type="button" class="preset-btn" data-preset="sequencing">Секвенирование</button>
+                                <button type="button" class="preset-btn" data-preset="custom">Сброс</button>
+                            </div>
+                        </div>
+
+                        <div class="advanced-checkboxes">
+                            <label class="checkbox">
+                                <input type="checkbox" id="check-hairpins" checked>
+                                <span>Проверять шпильки</span>
+                            </label>
+                            <label class="checkbox">
+                                <input type="checkbox" id="check-dimers" checked>
+                                <span>Проверять димеры</span>
+                            </label>
+                            <label class="checkbox">
+                                <input type="checkbox" id="check-repeats" checked>
+                                <span>Проверять повторы</span>
+                            </label>
+                        </div>
+
+                        <!-- Максимальная длина поли-X -->
+                        <div class="polyx-group">
+                            <label class="slider-label">
+                                Макс. длина поли-X участка:
+                                <span id="polyx-value" class="slider-value">4</span> нуклеотидов
+                            </label>
+                            <input type="range" id="polyx-slider" class="slider"
+                                   min="3" max="8" value="4" step="1">
+                            <div class="slider-hint">
+                                <small>Поли-A, поли-T, поли-G, поли-C (больше = риск скольжения полимеразы)</small>
+                            </div>
+                        </div>
+
+                        <!-- Температурный градиент -->
+                        <div class="gradient-group">
+                            <label class="slider-label">
+                                Температурный градиент:
+                                <span id="gradient-value" class="slider-value">5</span>°C
+                            </label>
+                            <input type="range" id="gradient-slider" class="slider"
+                                   min="0" max="15" value="5" step="0.5">
+                            <div class="slider-hint">
+                                <small>Разница между Tm праймера и температурой отжига (0 = оптимально)</small>
+                            </div>
+                        </div>
+
+                        <!-- Концентрация солей -->
+                        <div class="salt-group">
+                            <label>Концентрация солей для расчета Tm:</label>
+                            <div class="salt-inputs">
+                                <div class="salt-input-wrapper">
+                                    <span class="salt-label">Na⁺ (мМ):</span>
+                                    <input type="number" id="salt-na" class="salt-number"
+                                           value="50" min="0" max="500" step="10">
+                                </div>
+                                <div class="salt-input-wrapper">
+                                    <span class="salt-label">Mg²⁺ (мМ):</span>
+                                    <input type="number" id="salt-mg" class="salt-number"
+                                           value="1.5" min="0" max="10" step="0.5">
+                                </div>
+                                <div class="salt-input-wrapper">
+                                    <span class="salt-label">dNTPs (мМ):</span>
+                                    <input type="number" id="salt-dntp" class="salt-number"
+                                           value="0.2" min="0" max="2" step="0.1">
+                                </div>
+                                <div class="salt-input-wrapper">
+                                    <span class="salt-label">ДНК (нМ):</span>
+                                    <input type="number" id="salt-dna" class="salt-number"
+                                           value="50" min="0" max="500" step="10">
+                                </div>
+                                <div class="salt-input-wrapper">
+                                    <span class="salt-label">Праймер (нМ):</span>
+                                    <input type="number" id="salt-primer" class="salt-number"
+                                           value="200" min="0" max="1000" step="50">
+                                </div>
+                            </div>
+                            <div class="slider-hint">
+                                <small>Влияет на точность расчета Tm (метод ближайших соседей)</small>
+                            </div>
+                        </div>
+
+                        <!-- Исключение регионов -->
+                        <div class="exclude-group">
+                            <label>🚫 Исключить регионы (не выбирать праймеры):</label>
+                            <div class="exclude-list" id="exclude-list"></div>
+                            <div class="exclude-add">
+                                <div class="exclude-inputs">
+                                    <input type="number" id="exclude-start" class="exclude-number"
+                                           placeholder="Старт" min="0" step="1">
+                                    <span class="exclude-dash">–</span>
+                                    <input type="number" id="exclude-end" class="exclude-number"
+                                           placeholder="Конец" min="0" step="1">
+                                    <button type="button" id="exclude-add-btn" class="exclude-btn">➕</button>
+                                </div>
+                                <div class="exclude-presets">
+                                    <button type="button" class="exclude-preset" data-preset="low-complexity">Низкая сложность</button>
+                                    <button type="button" class="exclude-preset" data-preset="repeats">Повторы</button>
+                                    <button type="button" class="exclude-preset" data-preset="snp">Известные SNP</button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Проверка специфичности -->
+                        <div class="specificity-group">
+                            <label class="checkbox">
+                                <input type="checkbox" id="check-specificity">
+                                <span>🔍 Проверять специфичность (уникальность в геноме)</span>
+                            </label>
+                            <div class="specificity-options" id="specificity-options" style="display: none; margin-left: 24px; margin-top: 8px;">
+                                <div class="radio-group">
+                                    <label class="radio">
+                                        <input type="radio" name="specificity-level" value="strict" checked>
+                                        <span>Строгая (уникальные во всем геноме)</span>
+                                    </label>
+                                    <label class="radio">
+                                        <input type="radio" name="specificity-level" value="moderate">
+                                        <span>Умеренная (≤ 2 совпадений)</span>
+                                    </label>
+                                    <label class="radio">
+                                        <input type="radio" name="specificity-level" value="relaxed">
+                                        <span>Мягкая (≤ 5 совпадений)</span>
+                                    </label>
+                                </div>
+                                <select id="specificity-organism" class="specificity-select">
+                                    <option value="human">Человек (hg38)</option>
+                                    <option value="mouse">Мышь (mm39)</option>
+                                    <option value="rat">Крыса (rn7)</option>
+                                    <option value="zebrafish">Рыбка данио (GRCz11)</option>
+                                    <option value="arabidopsis">Арабидопсис (TAIR10)</option>
+                                    <option value="ecoli">E. coli (K12)</option>
+                                    <option value="custom">Загрузить свой геном...</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+                </details>
+
+                <style>
+                .advanced-settings-details { margin: 16px 0; border: 1px solid #e2e8f0; border-radius: 8px; background: #f8fafc; }
+                .advanced-settings-summary { padding: 12px 16px; font-weight: 600; color: #475569; cursor: pointer; user-select: none; }
+                .advanced-settings-summary:hover { background: #f1f5f9; }
+                .advanced-settings { padding: 16px; border-top: 1px solid #e2e8f0; }
+                .slider-group, .range-group, .thresholds-group, .tm-settings-group, .gc-settings-group, .presets-group { margin-bottom: 20px; }
+                .slider-group label, .range-group label, .thresholds-group label, .tm-settings-group label, .gc-settings-group label, .presets-group label { display: block; margin-bottom: 8px; font-size: 13px; font-weight: 500; color: #334155; }
+                .slider { width: 100%; height: 6px; border-radius: 3px; background: #e2e8f0; outline: none; appearance: none; -webkit-appearance: none; }
+                .slider::-webkit-slider-thumb { appearance: none; -webkit-appearance: none; width: 18px; height: 18px; border-radius: 50%; background: #3b82f6; cursor: pointer; border: 2px solid white; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+                .slider-value { display: inline-block; min-width: 40px; padding: 2px 8px; background: #e2e8f0; border-radius: 12px; font-size: 12px; font-weight: 600; text-align: center; }
+                .slider-hint { margin-top: 4px; color: #64748b; }
+                .slider-label { display: block; margin-bottom: 6px; font-size: 13px; font-weight: 500; color: #334155; }
+                .range-inputs { display: flex; gap: 12px; align-items: center; }
+                .range-input-wrapper { display: flex; align-items: center; gap: 4px; }
+                .range-label { font-size: 12px; color: #64748b; }
+                .range-number { width: 70px; padding: 6px 8px; border: 1px solid #e2e8f0; border-radius: 6px; font-size: 13px; }
+                .threshold-item { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; padding: 6px 0; }
+                .threshold-item.with-slider { flex-wrap: wrap; }
+                .threshold-label { min-width: 70px; font-size: 13px; }
+                .threshold-label.low { color: #22c55e; }
+                .threshold-label.medium { color: #eab308; }
+                .threshold-label.high { color: #ef4444; }
+                .threshold-slider { flex: 1; height: 4px; }
+                .threshold-slider-min, .threshold-slider-max { width: 80px; height: 4px; }
+                .threshold-dash { color: #94a3b8; }
+                .threshold-value { min-width: 60px; font-size: 12px; font-weight: 500; color: #334155; }
+                .preset-buttons { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+                .preset-btn { padding: 6px 12px; border: 1px solid #e2e8f0; border-radius: 6px; background: white; font-size: 12px; font-weight: 500; color: #475569; cursor: pointer; transition: all 0.2s; }
+                .preset-btn:hover { background: #f1f5f9; border-color: #94a3b8; }
+                .preset-btn[data-preset="qpcr"]:hover { background: #dbeafe; color: #1d4ed8; border-color: #3b82f6; }
+                .preset-btn[data-preset="cloning"]:hover { background: #dcfce7; color: #166534; border-color: #22c55e; }
+                .preset-btn[data-preset="sequencing"]:hover { background: #fef9c3; color: #854d0e; border-color: #eab308; }
+                .advanced-checkboxes { display: flex; flex-direction: column; gap: 8px; margin-top: 16px; padding-top: 16px; border-top: 1px dashed #e2e8f0; }
+                .advanced-checkboxes .checkbox { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+                .polyx-group, .gradient-group, .salt-group, .exclude-group, .specificity-group { margin-bottom: 20px; padding: 12px; background: #ffffff; border-radius: 8px; border: 1px solid #e2e8f0; }
+                .salt-inputs { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; margin: 10px 0; }
+                .salt-input-wrapper { display: flex; align-items: center; gap: 6px; }
+                .salt-label { font-size: 11px; color: #64748b; min-width: 50px; }
+                .salt-number { width: 70px; padding: 4px 6px; border: 1px solid #e2e8f0; border-radius: 4px; font-size: 12px; }
+                .exclude-list { min-height: 40px; padding: 8px; background: #f1f5f9; border-radius: 6px; margin-bottom: 10px; }
+                .exclude-item { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; margin: 4px; background: #ffffff; border: 1px solid #e2e8f0; border-radius: 16px; font-size: 12px; }
+                .exclude-item button { border: none; background: none; color: #ef4444; cursor: pointer; font-size: 14px; padding: 0 4px; }
+                .exclude-add { display: flex; flex-direction: column; gap: 10px; }
+                .exclude-inputs { display: flex; align-items: center; gap: 8px; }
+                .exclude-number { width: 80px; padding: 6px 8px; border: 1px solid #e2e8f0; border-radius: 6px; font-size: 13px; }
+                .exclude-dash { color: #94a3b8; font-weight: 500; }
+                .exclude-btn { padding: 6px 12px; background: #3b82f6; color: white; border: none; border-radius: 6px; cursor: pointer; }
+                .exclude-presets { display: flex; gap: 8px; flex-wrap: wrap; }
+                .exclude-preset { padding: 4px 10px; background: #f1f5f9; border: 1px solid #e2e8f0; border-radius: 4px; font-size: 11px; cursor: pointer; }
+                .exclude-preset:hover { background: #e2e8f0; }
+                .specificity-select { width: 100%; padding: 8px; margin-top: 8px; border: 1px solid #e2e8f0; border-radius: 6px; font-size: 13px; }
+                .radio-group { display: flex; flex-direction: column; gap: 6px; }
+                .radio { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+                .exclude-empty { font-size: 12px; color: #64748b; }
+                </style>
 
                 <hr>
 

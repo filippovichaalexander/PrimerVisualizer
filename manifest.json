@@ -12,6 +12,7 @@
   "permissions": [
     "storage",
     "activeTab",
+    "tabs",
     "contextMenus",
     "notifications",
     "alarms",
@@ -23,7 +24,8 @@
     "https://www.ncbi.nlm.nih.gov/*",
     "https://www.uniprot.org/*",
     "https://www.ensembl.org/*",
-    "https://your-api.example.com/*"
+    "http://localhost:8000/*",
+    "http://127.0.0.1:8000/*"
   ],
 
   "content_scripts": [

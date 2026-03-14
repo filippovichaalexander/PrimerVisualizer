@@ -12,15 +12,19 @@ chrome.runtime.onInstalled.addListener(async (details) => {
     if (details.reason === 'install') {
         await initializeExtension();
     }
-
+    if (details.reason === 'install' || details.reason === 'update') {
+        await chrome.contextMenus.removeAll().catch(() => {});
+    }
     createContextMenus();
-    chrome.alarms.create('sync', { periodInMinutes: 30 });
+    chrome.alarms.create('sync', { periodInMinutes: 30 }).catch(() => {});
 });
 
 // По клику на иконку расширения открываем интерфейс в новой вкладке
-chrome.action.onClicked.addListener(() => {
+chrome.action.onClicked.addListener((tab) => {
     const url = chrome.runtime.getURL('popup/popup.html');
-    chrome.tabs.create({ url });
+    chrome.tabs.create({ url }).catch((err) => {
+        console.error('PrimerDesigner: не удалось открыть вкладку', err);
+    });
 });
 
 async function initializeExtension() {
@@ -44,11 +48,15 @@ async function initializeExtension() {
 }
 
 function createContextMenus() {
-    chrome.contextMenus.create({
-        id: 'design-primers',
-        title: '🧬 Дизайн праймеров для выделенного',
-        contexts: ['selection']
-    });
+    try {
+        chrome.contextMenus.create({
+            id: 'design-primers',
+            title: '🧬 Дизайн праймеров для выделенного',
+            contexts: ['selection']
+        });
+    } catch (e) {
+        console.warn('PrimerDesigner: context menu', e);
+    }
 }
 
 chrome.contextMenus.onClicked.addListener((info, tab) => {
@@ -79,10 +87,9 @@ async function quickDesign(sequence, tab) {
         source: tab?.url || 'manual'
     });
 
-    chrome.tabs.sendMessage(tab.id, {
-        type: 'SHOW_QUICK_RESULTS',
-        primers
-    });
+    if (tab?.id) {
+        chrome.tabs.sendMessage(tab.id, { type: 'SHOW_QUICK_RESULTS', primers }).catch(() => {});
+    }
 }
 
 function generatePrimers(sequence) {
@@ -126,7 +133,10 @@ function generatePrimers(sequence) {
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     switch (request.type) {
         case 'OPEN_POPUP':
-            chrome.action.openPopup();
+            try {
+                const url = chrome.runtime.getURL('popup/popup.html');
+                chrome.tabs.create({ url }).catch(() => {});
+            } catch (e) {}
             break;
         case 'OPEN_WITH_SEQUENCE':
             handleOpenWithSequence(request.data);

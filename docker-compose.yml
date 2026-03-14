@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   backend:
     build:
@@ -13,7 +11,21 @@ services:
       - "8000:8000"
     environment:
       - DJANGO_SETTINGS_MODULE=primer_backend.settings
+      - PRIMER3_MICROSERVICE_URL=http://primer3-service:8001
     command: >
       sh -c "python manage.py migrate &&
              python manage.py runserver 0.0.0.0:8000"
+
+  primer3-service:
+    build:
+      context: .
+      dockerfile: primer3_service/Dockerfile
+    container_name: primerdesigner-primer3
+    volumes:
+      - ./primer3_service:/app
+    ports:
+      - "8001:8001"
+    environment:
+      - PORT=8001
+      - CORS_ORIGINS=http://localhost:8000,http://127.0.0.1:8000,chrome-extension://*
 

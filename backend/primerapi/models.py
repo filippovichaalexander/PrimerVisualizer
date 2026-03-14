@@ -17,10 +17,30 @@ class Feedback(models.Model):
         return f"Feedback {self.id} ({self.result})"
 
 
+class PrimerPair(models.Model):
+    """Пара праймеров (для связи с PrimerOverlap)."""
+    created_at = models.DateTimeField(auto_now_add=True)
+    sequence_id = models.CharField(max_length=64, blank=True, default="")
+    forward_seq = models.CharField(max_length=512)
+    reverse_seq = models.CharField(max_length=512)
+    forward_start = models.IntegerField(default=0)
+    forward_end = models.IntegerField(default=0)
+    reverse_start = models.IntegerField(default=0)
+    reverse_end = models.IntegerField(default=0)
+    score = models.IntegerField(null=True, blank=True)
+
+    def __str__(self) -> str:
+        return f"Pair {self.id}"
+
+
 class PrimerOverlap(models.Model):
     """Модель для хранения информации о пересечениях праймеров"""
-    primer_pair1 = models.ForeignKey(PrimerPair, on_delete=models.CASCADE, related_name='overlaps_as_first')
-    primer_pair2 = models.ForeignKey(PrimerPair, on_delete=models.CASCADE, related_name='overlaps_as_second')
+    primer_pair1 = models.ForeignKey(
+        PrimerPair, on_delete=models.CASCADE, related_name='overlaps_as_first'
+    )
+    primer_pair2 = models.ForeignKey(
+        PrimerPair, on_delete=models.CASCADE, related_name='overlaps_as_second'
+    )
     
     # Типы пересечений
     OVERLAP_TYPES = [

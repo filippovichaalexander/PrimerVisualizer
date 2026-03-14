@@ -1,14 +1,75 @@
 import { PrimerHeuristicEngine } from '../lib/heuristic-engine.js';
 import { StorageManager } from '../lib/storage-manager.js';
-import { DNAVisualizer } from './visualization.js';
+import { DNAVisualizer, OverlapVisualizer } from './visualization.js';
 import { API_BASE_URL } from '../config.js';
 
 const heuristicEngine = new PrimerHeuristicEngine();
 const storage = new StorageManager();
 
+const RESULTS_PER_PAGE = 10;
+
+/** Извлекает номер пары из id (server_primer3_0 → 1, local_2 → 3) для отображения. */
+function getPairNumber(id) {
+    if (id == null || id === '') return '?';
+    const match = String(id).match(/_(\d+)$/);
+    return match ? parseInt(match[1], 10) + 1 : '?';
+}
+
+/** Нормализует результаты онлайн/оффлайн к одной структуре: id, forward/reverse { start, end, sequence, details }. */
+function normalizeResults(results, sourceHint = null) {
+    if (!Array.isArray(results) || results.length === 0) return results;
+    return results.map((r, i) => {
+        const source = r.source ?? sourceHint ?? (r.id && String(r.id).startsWith('server') ? 'server' : 'local');
+        const prefix = source === 'server' || (r.id && String(r.id).startsWith('server')) ? 'server' : 'local';
+        const id = r.id != null && String(r.id) !== '' ? String(r.id) : `${prefix}_${i}`;
+        const f = r.forward || {};
+        const fDetails = f.details || {};
+        const fTm = fDetails.tm && typeof fDetails.tm === 'object' ? fDetails.tm.value : fDetails.tm;
+        const fGc = fDetails.gc && typeof fDetails.gc === 'object' ? fDetails.gc.value : fDetails.gc;
+        const rev = r.reverse || {};
+        const rDetails = rev.details || {};
+        const rTm = rDetails.tm && typeof rDetails.tm === 'object' ? rDetails.tm.value : rDetails.tm;
+        const rGc = rDetails.gc && typeof rDetails.gc === 'object' ? rDetails.gc.value : rDetails.gc;
+        return {
+            ...r,
+            id,
+            rank: r.rank != null ? r.rank : i + 1,
+            forward: {
+                sequence: f.sequence ?? '',
+                start: f.start ?? 0,
+                end: f.end ?? (f.start ?? 0) + (f.sequence ?? '').length,
+                ...f,
+                details: {
+                    ...fDetails,
+                    tm: typeof fTm === 'number' ? { value: fTm } : (fDetails.tm || { value: 0 }),
+                    gc: typeof fGc === 'number' ? { value: fGc } : (fDetails.gc || { value: 0 }),
+                },
+            },
+            reverse: {
+                sequence: rev.sequence ?? '',
+                start: rev.start ?? 0,
+                end: rev.end ?? (rev.start ?? 0) + (rev.sequence ?? '').length,
+                ...rev,
+                details: {
+                    ...rDetails,
+                    tm: typeof rTm === 'number' ? { value: rTm } : (rDetails.tm || { value: 0 }),
+                    gc: typeof rGc === 'number' ? { value: rGc } : (rDetails.gc || { value: 0 }),
+                },
+            },
+            warnings: Array.isArray(r.warnings) ? r.warnings : (r.warnings ? [r.warnings] : []),
+            recommendations: Array.isArray(r.recommendations) ? r.recommendations : (r.recommendations ? [r.recommendations] : []),
+            source: r.source ?? source,
+        };
+    });
+}
+
 let currentSequence = '';
 let currentResults = null;
+let resultsPage = 1;
+let overlapPage = 1;
+let overlapTab = 'all';
 let settings = {};
+let advancedSettings = {};
 let visualizer = null;
 
 document.addEventListener('DOMContentLoaded', async () => {
@@ -38,7 +99,36 @@ async function loadSettings() {
         primerLength: 22,
         autoSync: true,
         notifications: true,
-        theme: 'light'
+        theme: 'light',
+        forceOfflineMode: false
+    };
+
+    advancedSettings = await storage.get('advancedSettings') || {
+        stepSize: 3,
+        minDistance: 50,
+        minProductSize: 80,
+        maxProductSize: 500,
+        lowThreshold: 15,
+        mediumThresholdMin: 15,
+        mediumThresholdMax: 40,
+        highThreshold: 40,
+        tmTolerance: 3,
+        minGc: 35,
+        maxGc: 65,
+        checkHairpins: true,
+        checkDimers: true,
+        checkRepeats: true,
+        maxPolyX: 4,
+        temperatureGradient: 5,
+        saltNa: 50,
+        saltMg: 1.5,
+        saltDntp: 0.2,
+        saltDna: 50,
+        saltPrimer: 200,
+        excludeRegions: [],
+        checkSpecificity: false,
+        specificityLevel: 'strict',
+        specificityOrganism: 'human'
     };
 
     document.getElementById('tm').value = settings.defaultTm;
@@ -48,6 +138,130 @@ async function loadSettings() {
     document.getElementById('notifications').checked = settings.notifications;
     document.getElementById('auto-design').checked = settings.autoDesign || false;
     document.getElementById('theme').value = settings.theme;
+    const forceOfflineEl = document.getElementById('force-offline');
+    if (forceOfflineEl) forceOfflineEl.checked = settings.forceOfflineMode || false;
+
+    updateAdvancedSettingsUI();
+    updateNewSettingsUI();
+    updateStatusDisplay();
+}
+
+function updateAdvancedSettingsUI() {
+    const stepSlider = document.getElementById('step-slider');
+    const stepValue = document.getElementById('step-value');
+    if (stepSlider && stepValue) {
+        stepSlider.value = advancedSettings.stepSize;
+        stepValue.textContent = advancedSettings.stepSize;
+    }
+    const distanceSlider = document.getElementById('min-distance-slider');
+    const distanceValue = document.getElementById('min-distance-value');
+    if (distanceSlider && distanceValue) {
+        distanceSlider.value = advancedSettings.minDistance;
+        distanceValue.textContent = advancedSettings.minDistance;
+    }
+    const minProduct = document.getElementById('min-product-size');
+    const maxProduct = document.getElementById('max-product-size');
+    if (minProduct) minProduct.value = advancedSettings.minProductSize;
+    if (maxProduct) maxProduct.value = advancedSettings.maxProductSize;
+    updateThresholdDisplay();
+    const tmSlider = document.getElementById('tm-tolerance-slider');
+    const tmValue = document.getElementById('tm-tolerance-value');
+    if (tmSlider && tmValue) {
+        tmSlider.value = advancedSettings.tmTolerance;
+        tmValue.textContent = `±${advancedSettings.tmTolerance}°C`;
+    }
+    const minGc = document.getElementById('min-gc');
+    const maxGc = document.getElementById('max-gc');
+    if (minGc) minGc.value = advancedSettings.minGc;
+    if (maxGc) maxGc.value = advancedSettings.maxGc;
+    const checkHairpins = document.getElementById('check-hairpins');
+    const checkDimers = document.getElementById('check-dimers');
+    const checkRepeats = document.getElementById('check-repeats');
+    if (checkHairpins) checkHairpins.checked = advancedSettings.checkHairpins;
+    if (checkDimers) checkDimers.checked = advancedSettings.checkDimers;
+    if (checkRepeats) checkRepeats.checked = advancedSettings.checkRepeats;
+}
+
+function updateThresholdDisplay() {
+    const lowValue = document.getElementById('low-threshold-value');
+    if (lowValue) lowValue.textContent = `0-${advancedSettings.lowThreshold}%`;
+    const mediumMin = document.getElementById('medium-threshold-min');
+    const mediumMax = document.getElementById('medium-threshold-max');
+    const mediumValue = document.getElementById('medium-threshold-value');
+    if (mediumMin && mediumMax) {
+        mediumMin.value = advancedSettings.mediumThresholdMin;
+        mediumMax.value = advancedSettings.mediumThresholdMax;
+        if (parseInt(mediumMin.value, 10) > parseInt(mediumMax.value, 10)) {
+            mediumMax.value = mediumMin.value;
+        }
+    }
+    if (mediumValue) {
+        mediumValue.textContent = `${advancedSettings.mediumThresholdMin}-${advancedSettings.mediumThresholdMax}%`;
+    }
+    const highSlider = document.getElementById('high-threshold-slider');
+    const highValue = document.getElementById('high-threshold-value');
+    if (highSlider && highValue) {
+        highSlider.value = advancedSettings.highThreshold;
+        highValue.textContent = `>${advancedSettings.highThreshold}%`;
+    }
+}
+
+function updateNewSettingsUI() {
+    const polyxSlider = document.getElementById('polyx-slider');
+    const polyxValue = document.getElementById('polyx-value');
+    if (polyxSlider && polyxValue) {
+        polyxSlider.value = advancedSettings.maxPolyX;
+        polyxValue.textContent = advancedSettings.maxPolyX;
+    }
+    const gradientSlider = document.getElementById('gradient-slider');
+    const gradientValue = document.getElementById('gradient-value');
+    if (gradientSlider && gradientValue) {
+        gradientSlider.value = advancedSettings.temperatureGradient;
+        gradientValue.textContent = advancedSettings.temperatureGradient;
+    }
+    const saltIds = ['salt-na', 'salt-mg', 'salt-dntp', 'salt-dna', 'salt-primer'];
+    const saltKeys = ['saltNa', 'saltMg', 'saltDntp', 'saltDna', 'saltPrimer'];
+    saltIds.forEach((id, i) => {
+        const el = document.getElementById(id);
+        if (el && advancedSettings[saltKeys[i]] != null) el.value = advancedSettings[saltKeys[i]];
+    });
+    updateExcludeRegionsList();
+    const checkSpecificity = document.getElementById('check-specificity');
+    const specificityOptions = document.getElementById('specificity-options');
+    if (checkSpecificity) {
+        checkSpecificity.checked = advancedSettings.checkSpecificity;
+        if (specificityOptions) {
+            specificityOptions.style.display = advancedSettings.checkSpecificity ? 'block' : 'none';
+        }
+    }
+    const levelRadios = document.querySelectorAll('input[name="specificity-level"]');
+    levelRadios.forEach(r => {
+        if (r.value === advancedSettings.specificityLevel) r.checked = true;
+    });
+    const organismSelect = document.getElementById('specificity-organism');
+    if (organismSelect) organismSelect.value = advancedSettings.specificityOrganism;
+}
+
+function updateExcludeRegionsList() {
+    const listEl = document.getElementById('exclude-list');
+    if (!listEl) return;
+    if (!advancedSettings.excludeRegions || advancedSettings.excludeRegions.length === 0) {
+        listEl.innerHTML = '<div class="exclude-empty">Нет исключенных регионов</div>';
+        return;
+    }
+    let html = '';
+    advancedSettings.excludeRegions.forEach((region, index) => {
+        html += `<div class="exclude-item"><span>${region.start}-${region.end}</span><button type="button" class="exclude-remove" data-index="${index}">✕</button></div>`;
+    });
+    listEl.innerHTML = html;
+    listEl.querySelectorAll('.exclude-remove').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            const index = parseInt(e.currentTarget.dataset.index, 10);
+            advancedSettings.excludeRegions.splice(index, 1);
+            updateExcludeRegionsList();
+            storage.set('advancedSettings', advancedSettings);
+        });
+    });
 }
 
 async function loadStats() {
@@ -64,17 +278,145 @@ async function loadStats() {
         stats.installDate ? new Date(stats.installDate).toLocaleDateString() : '-';
 }
 
+function debounce(func, wait) {
+    let timeout;
+    return function executedFunction(...args) {
+        clearTimeout(timeout);
+        timeout = setTimeout(() => func.apply(this, args), wait);
+    };
+}
+
+function applyPreset(preset) {
+    const textarea = document.getElementById('sequence');
+    const seqStr = (textarea && textarea.value) ? textarea.value.replace(/\s/g, '') : '';
+    const seqLength = currentSequence?.length || seqStr.length || 500;
+
+    const defaults = {
+        stepSize: 3,
+        minDistance: 50,
+        minProductSize: 80,
+        maxProductSize: 500,
+        lowThreshold: 15,
+        mediumThresholdMin: 15,
+        mediumThresholdMax: 40,
+        highThreshold: 40,
+        tmTolerance: 3,
+        minGc: 35,
+        maxGc: 65,
+        checkHairpins: true,
+        checkDimers: true,
+        checkRepeats: true
+    };
+    switch (preset) {
+        case 'qpcr':
+            advancedSettings = {
+                ...advancedSettings,
+                ...defaults,
+                stepSize: 2,
+                minDistance: 30,
+                minProductSize: 80,
+                maxProductSize: Math.min(200, Math.max(120, Math.floor(seqLength * 0.5))),
+                lowThreshold: 10,
+                mediumThresholdMin: 10,
+                mediumThresholdMax: 25,
+                highThreshold: 25,
+                tmTolerance: 2,
+                minGc: 40,
+                maxGc: 60
+            };
+            break;
+        case 'cloning':
+            {
+                const minProduct = Math.min(200, Math.floor(seqLength * 0.6));
+                const maxProduct = Math.min(2000, Math.floor(seqLength * 0.9));
+                advancedSettings = {
+                    ...advancedSettings,
+                    ...defaults,
+                    stepSize: 5,
+                    minDistance: 100,
+                    minProductSize: Math.max(100, minProduct),
+                    maxProductSize: Math.max(minProduct + 100, maxProduct),
+                    lowThreshold: 20,
+                    mediumThresholdMin: 20,
+                    mediumThresholdMax: 50,
+                    highThreshold: 50,
+                    tmTolerance: 5,
+                    minGc: 30,
+                    maxGc: 70,
+                    checkHairpins: false,
+                    checkRepeats: false
+                };
+            }
+            break;
+        case 'sequencing':
+            {
+                const seqMin = Math.min(400, Math.max(150, Math.floor(seqLength * 0.5)));
+                const seqMax = Math.min(800, Math.max(seqMin + 100, Math.floor(seqLength * 0.85)));
+                advancedSettings = {
+                    ...advancedSettings,
+                    ...defaults,
+                    stepSize: 1,
+                    minDistance: 200,
+                    minProductSize: seqMin,
+                    maxProductSize: seqMax,
+                    lowThreshold: 5,
+                    mediumThresholdMin: 5,
+                    mediumThresholdMax: 15,
+                    highThreshold: 15,
+                    tmTolerance: 1,
+                    minGc: 45,
+                    maxGc: 55
+                };
+            }
+            break;
+        case 'custom':
+        default:
+            advancedSettings = { ...advancedSettings, ...defaults };
+            break;
+    }
+    updateAdvancedSettingsUI();
+    updateNewSettingsUI();
+    storage.set('advancedSettings', advancedSettings);
+}
+
 function checkNetworkStatus() {
+    updateStatusDisplay();
+}
+
+function updateStatusDisplay() {
     const indicator = document.getElementById('status-indicator');
-    const text = document.getElementById('status-text');
+    const textEl = document.getElementById('status-text');
+    const modeEl = document.getElementById('status-mode');
+    const toggleBtn = document.getElementById('mode-toggle');
+
+    if (!indicator || !textEl) return;
+
+    const forceOffline = settings.forceOfflineMode || false;
 
     if (navigator.onLine) {
         indicator.className = 'status-indicator online';
-        text.textContent = 'Онлайн';
+        indicator.title = 'Сеть: доступна';
+        textEl.textContent = 'Онлайн';
     } else {
         indicator.className = 'status-indicator offline';
-        text.textContent = 'Оффлайн (эвристика)';
+        indicator.title = 'Сеть: недоступна';
+        textEl.textContent = 'Оффлайн';
     }
+
+    if (modeEl) {
+        modeEl.textContent = forceOffline ? 'Локально' : 'Сервер';
+        modeEl.className = 'status-mode ' + (forceOffline ? 'mode-local' : 'mode-server');
+    }
+    if (toggleBtn) {
+        toggleBtn.textContent = forceOffline ? 'Переключить на сервер' : 'Переключить на локально';
+        toggleBtn.className = 'status-mode-toggle ' + (forceOffline ? 'mode-local' : 'mode-server');
+    }
+}
+
+function toggleForceOfflineMode() {
+    settings.forceOfflineMode = !(settings.forceOfflineMode || false);
+    storage.set('settings', settings);
+    updateStatusDisplay();
 }
 
 async function checkForNCBIData() {
@@ -95,6 +437,8 @@ function setupEventListeners() {
     document.getElementById('paste-btn').addEventListener('click', pasteFromClipboard);
     document.getElementById('sample-btn').addEventListener('click', loadSample);
     document.getElementById('use-ncbi').addEventListener('click', useNCBIData);
+    const useNcbiAndDesign = document.getElementById('use-ncbi-and-design');
+    if (useNcbiAndDesign) useNcbiAndDesign.addEventListener('click', useNCBIDataAndDesign);
 
     document.getElementById('sequence').addEventListener('input', (e) => {
         updateSequenceStats(e.target.value);
@@ -105,11 +449,218 @@ function setupEventListeners() {
     document.getElementById('notifications').addEventListener('change', saveSettings);
     document.getElementById('auto-design').addEventListener('change', saveSettings);
     document.getElementById('theme').addEventListener('change', saveSettings);
+    const forceOfflineEl = document.getElementById('force-offline');
+    if (forceOfflineEl) forceOfflineEl.addEventListener('change', saveSettings);
+    const modeToggle = document.getElementById('mode-toggle');
+    if (modeToggle) modeToggle.addEventListener('click', toggleForceOfflineMode);
+
+    window.addEventListener('online', checkNetworkStatus);
+    window.addEventListener('offline', checkNetworkStatus);
 
     document.getElementById('export-btn').addEventListener('click', exportData);
     document.getElementById('clear-data-btn').addEventListener('click', clearAllData);
     document.getElementById('feedback-link').addEventListener('click', openFeedback);
     document.getElementById('help-link').addEventListener('click', openHelp);
+
+    const saveAdvancedSettings = () => storage.set('advancedSettings', advancedSettings);
+    const debouncedSaveAdvanced = debounce(saveAdvancedSettings, 500);
+
+    const stepSlider = document.getElementById('step-slider');
+    if (stepSlider) {
+        stepSlider.addEventListener('input', (e) => {
+            advancedSettings.stepSize = parseInt(e.target.value, 10);
+            const v = document.getElementById('step-value');
+            if (v) v.textContent = e.target.value;
+            debouncedSaveAdvanced();
+        });
+    }
+    const distanceSlider = document.getElementById('min-distance-slider');
+    if (distanceSlider) {
+        distanceSlider.addEventListener('input', (e) => {
+            advancedSettings.minDistance = parseInt(e.target.value, 10);
+            const v = document.getElementById('min-distance-value');
+            if (v) v.textContent = e.target.value;
+            debouncedSaveAdvanced();
+        });
+    }
+    const minProduct = document.getElementById('min-product-size');
+    const maxProduct = document.getElementById('max-product-size');
+    if (minProduct) {
+        minProduct.addEventListener('change', (e) => {
+            advancedSettings.minProductSize = parseInt(e.target.value, 10);
+            if (advancedSettings.minProductSize > advancedSettings.maxProductSize) {
+                advancedSettings.maxProductSize = advancedSettings.minProductSize + 100;
+                if (maxProduct) maxProduct.value = advancedSettings.maxProductSize;
+            }
+            debouncedSaveAdvanced();
+        });
+    }
+    if (maxProduct) {
+        maxProduct.addEventListener('change', (e) => {
+            advancedSettings.maxProductSize = parseInt(e.target.value, 10);
+            if (advancedSettings.maxProductSize < advancedSettings.minProductSize) {
+                advancedSettings.minProductSize = advancedSettings.maxProductSize - 100;
+                if (minProduct) minProduct.value = advancedSettings.minProductSize;
+            }
+            debouncedSaveAdvanced();
+        });
+    }
+    const mediumMin = document.getElementById('medium-threshold-min');
+    const mediumMax = document.getElementById('medium-threshold-max');
+    if (mediumMin) {
+        mediumMin.addEventListener('input', (e) => {
+            advancedSettings.mediumThresholdMin = parseInt(e.target.value, 10);
+            if (advancedSettings.mediumThresholdMin > advancedSettings.mediumThresholdMax) {
+                advancedSettings.mediumThresholdMax = advancedSettings.mediumThresholdMin;
+                if (mediumMax) mediumMax.value = advancedSettings.mediumThresholdMax;
+            }
+            updateThresholdDisplay();
+            debouncedSaveAdvanced();
+        });
+    }
+    if (mediumMax) {
+        mediumMax.addEventListener('input', (e) => {
+            advancedSettings.mediumThresholdMax = parseInt(e.target.value, 10);
+            if (advancedSettings.mediumThresholdMax < advancedSettings.mediumThresholdMin) {
+                advancedSettings.mediumThresholdMin = advancedSettings.mediumThresholdMax;
+                if (mediumMin) mediumMin.value = advancedSettings.mediumThresholdMin;
+            }
+            updateThresholdDisplay();
+            debouncedSaveAdvanced();
+        });
+    }
+    const highSlider = document.getElementById('high-threshold-slider');
+    if (highSlider) {
+        highSlider.addEventListener('input', (e) => {
+            advancedSettings.highThreshold = parseInt(e.target.value, 10);
+            updateThresholdDisplay();
+            debouncedSaveAdvanced();
+        });
+    }
+    const tmTolSlider = document.getElementById('tm-tolerance-slider');
+    if (tmTolSlider) {
+        tmTolSlider.addEventListener('input', (e) => {
+            advancedSettings.tmTolerance = parseFloat(e.target.value);
+            const v = document.getElementById('tm-tolerance-value');
+            if (v) v.textContent = `±${e.target.value}°C`;
+            debouncedSaveAdvanced();
+        });
+    }
+    const minGcEl = document.getElementById('min-gc');
+    const maxGcEl = document.getElementById('max-gc');
+    if (minGcEl) {
+        minGcEl.addEventListener('change', (e) => {
+            advancedSettings.minGc = parseInt(e.target.value, 10);
+            if (advancedSettings.minGc > advancedSettings.maxGc) {
+                advancedSettings.maxGc = advancedSettings.minGc + 10;
+                if (maxGcEl) maxGcEl.value = advancedSettings.maxGc;
+            }
+            debouncedSaveAdvanced();
+        });
+    }
+    if (maxGcEl) {
+        maxGcEl.addEventListener('change', (e) => {
+            advancedSettings.maxGc = parseInt(e.target.value, 10);
+            if (advancedSettings.maxGc < advancedSettings.minGc) {
+                advancedSettings.minGc = advancedSettings.maxGc - 10;
+                if (minGcEl) minGcEl.value = advancedSettings.minGc;
+            }
+            debouncedSaveAdvanced();
+        });
+    }
+    const checkHairpins = document.getElementById('check-hairpins');
+    const checkDimers = document.getElementById('check-dimers');
+    const checkRepeats = document.getElementById('check-repeats');
+    if (checkHairpins) checkHairpins.addEventListener('change', (e) => { advancedSettings.checkHairpins = e.target.checked; debouncedSaveAdvanced(); });
+    if (checkDimers) checkDimers.addEventListener('change', (e) => { advancedSettings.checkDimers = e.target.checked; debouncedSaveAdvanced(); });
+    if (checkRepeats) checkRepeats.addEventListener('change', (e) => { advancedSettings.checkRepeats = e.target.checked; debouncedSaveAdvanced(); });
+
+    document.querySelectorAll('.preset-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            applyPreset(e.currentTarget.dataset.preset);
+        });
+    });
+
+    const polyxSlider = document.getElementById('polyx-slider');
+    if (polyxSlider) {
+        polyxSlider.addEventListener('input', (e) => {
+            advancedSettings.maxPolyX = parseInt(e.target.value, 10);
+            const v = document.getElementById('polyx-value');
+            if (v) v.textContent = e.target.value;
+            debouncedSaveAdvanced();
+        });
+    }
+    const gradientSlider = document.getElementById('gradient-slider');
+    if (gradientSlider) {
+        gradientSlider.addEventListener('input', (e) => {
+            advancedSettings.temperatureGradient = parseFloat(e.target.value);
+            const v = document.getElementById('gradient-value');
+            if (v) v.textContent = e.target.value;
+            debouncedSaveAdvanced();
+        });
+    }
+    const saltMap = { 'salt-na': 'saltNa', 'salt-mg': 'saltMg', 'salt-dntp': 'saltDntp', 'salt-dna': 'saltDna', 'salt-primer': 'saltPrimer' };
+    Object.keys(saltMap).forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.addEventListener('change', (e) => {
+            advancedSettings[saltMap[id]] = parseFloat(e.target.value);
+            debouncedSaveAdvanced();
+        });
+    });
+    const excludeAddBtn = document.getElementById('exclude-add-btn');
+    if (excludeAddBtn) {
+        excludeAddBtn.addEventListener('click', () => {
+            const start = parseInt(document.getElementById('exclude-start').value, 10);
+            const end = parseInt(document.getElementById('exclude-end').value, 10);
+            if (!isNaN(start) && !isNaN(end) && start >= 0 && end > start) {
+                if (!advancedSettings.excludeRegions) advancedSettings.excludeRegions = [];
+                advancedSettings.excludeRegions.push({ start, end });
+                advancedSettings.excludeRegions.sort((a, b) => a.start - b.start);
+                updateExcludeRegionsList();
+                document.getElementById('exclude-start').value = '';
+                document.getElementById('exclude-end').value = '';
+                debouncedSaveAdvanced();
+            }
+        });
+    }
+    document.querySelectorAll('.exclude-preset').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            const preset = e.currentTarget.dataset.preset;
+            let start = 0, end = 50;
+            if (preset === 'repeats') { start = 200; end = 250; }
+            else if (preset === 'snp') { start = 450; end = 451; }
+            document.getElementById('exclude-start').value = start;
+            document.getElementById('exclude-end').value = end;
+        });
+    });
+    const checkSpecificity = document.getElementById('check-specificity');
+    const specificityOptions = document.getElementById('specificity-options');
+    if (checkSpecificity) {
+        checkSpecificity.addEventListener('change', (e) => {
+            advancedSettings.checkSpecificity = e.target.checked;
+            if (specificityOptions) specificityOptions.style.display = e.target.checked ? 'block' : 'none';
+            debouncedSaveAdvanced();
+        });
+    }
+    document.querySelectorAll('input[name="specificity-level"]').forEach(radio => {
+        radio.addEventListener('change', (e) => {
+            advancedSettings.specificityLevel = e.target.value;
+            debouncedSaveAdvanced();
+        });
+    });
+    const organismSelect = document.getElementById('specificity-organism');
+    if (organismSelect) {
+        organismSelect.addEventListener('change', (e) => {
+            advancedSettings.specificityOrganism = e.target.value;
+            debouncedSaveAdvanced();
+        });
+    }
+
+    const advInputs = document.querySelectorAll('.advanced-settings input, .advanced-settings select');
+    advInputs.forEach(el => {
+        el.addEventListener('change', debouncedSaveAdvanced);
+        el.addEventListener('input', debouncedSaveAdvanced);
+    });
 }
 
 function setupTabs() {
@@ -155,6 +706,11 @@ async function designPrimers() {
         showError('Минимальная длина последовательности: 50 нуклеотидов');
         return;
     }
+    if (cleaned.length < 200) {
+        showWarning(
+            `Последовательность короткая (${cleaned.length} нт). Для получения низкого риска пересечений желательно >300 нт.`
+        );
+    }
 
     currentSequence = cleaned;
     showProgress(true);
@@ -162,17 +718,28 @@ async function designPrimers() {
     try {
         await storage.set('lastSequence', cleaned);
 
+        const params = { tm, gc, length };
         let results = null;
-        if (navigator.onLine) {
-            results = await designWithServer(cleaned, { tm, gc, length });
-        }
+        let serverUnavailable = false;
+        let serverReturnedEmpty = false;
 
-        if (!results) {
-            results = designLocally(cleaned, { tm, gc, length });
+        if (navigator.onLine && !(settings.forceOfflineMode || false)) {
+            results = await designWithServer(cleaned, params);
+            if (results && results.length > 0) {
+                results = normalizeResults(results, 'server');
+            } else if (!results) {
+                serverUnavailable = true;
+            } else {
+                serverReturnedEmpty = true;
+            }
+        }
+        if (!results || results.length === 0) {
+            results = designLocally(cleaned, params);
+            results = normalizeResults(results, 'local');
         }
 
         currentResults = results;
-        displayResults(results);
+        displayResults(results, { serverUnavailable, serverReturnedEmpty });
 
         await storage.addToHistory({
             sequence: cleaned,
@@ -189,72 +756,166 @@ async function designPrimers() {
 }
 
 async function designWithServer(sequence, params) {
+    const url = `${API_BASE_URL}/api/design/`;
+    const body = {
+        sequence,
+        tm: params.tm,
+        gc: params.gc,
+        length: params.length
+    };
+    if (advancedSettings.minProductSize != null) body.minProductSize = advancedSettings.minProductSize;
+    if (advancedSettings.maxProductSize != null) body.maxProductSize = advancedSettings.maxProductSize;
+    if (advancedSettings.excludeRegions && advancedSettings.excludeRegions.length > 0) {
+        body.excludeRegions = advancedSettings.excludeRegions;
+    }
+    if (advancedSettings.minGc != null) body.minGc = advancedSettings.minGc;
+    if (advancedSettings.maxGc != null) body.maxGc = advancedSettings.maxGc;
     try {
-        const response = await fetch(`${API_BASE_URL}/api/design/`, {
+        const response = await fetch(url, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                sequence,
-                tm: params.tm,
-                gc: params.gc,
-                length: params.length
-            })
+            body: JSON.stringify(body)
         });
 
-        if (!response.ok) return null;
+        if (!response.ok) {
+            console.warn('PrimerDesigner API:', url, 'status', response.status, await response.text().catch(() => ''));
+            return null;
+        }
 
         const data = await response.json();
-        return data.results || null;
-    } catch {
+        if (!data.results || !Array.isArray(data.results)) {
+            console.warn('Сервер вернул не массив results:', data);
+            return null;
+        }
+        const seen = new Set();
+        const unique = data.results.filter((r) => {
+            const fwd = r?.forward?.sequence ?? '';
+            const rev = r?.reverse?.sequence ?? '';
+            const key = `${fwd}_${rev}`;
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+        });
+        if (unique.length !== data.results.length) {
+            console.warn(`Сервер вернул ${data.results.length} пар, уникальных: ${unique.length}`);
+        }
+        return unique;
+    } catch (e) {
+        console.warn('PrimerDesigner API request failed:', url, e);
         return null;
     }
 }
 
 function designLocally(sequence, params) {
     const results = [];
-    const step = Math.floor(sequence.length / 15);
+    const minLength = 18;
+    const maxLength = 28;
+    const stepFwd = advancedSettings.stepSize || 3;
+    const minProductSize = advancedSettings.minProductSize || 50;
+    const maxProductSize = advancedSettings.maxProductSize || 2000;
+    const excludedRegions = advancedSettings.excludeRegions || [];
+    const maxEvaluations = 6000;
 
-    for (let i = 0; i < 10; i++) {
-        const start = i * step;
-        const end = start + params.length;
-
-        if (end < sequence.length) {
+    for (let start = 0; start < sequence.length - minLength && results.length < maxEvaluations; start += stepFwd) {
+        for (let len = minLength; len <= maxLength && results.length < maxEvaluations; len++) {
+            const end = start + len;
+            if (end > sequence.length) continue;
+            const excludeCheck = heuristicEngine.checkExcludedRegions(start, end, excludedRegions);
+            if (!excludeCheck.passed) continue;
             const fwdSeq = sequence.substring(start, end);
-            const revSeq = sequence.substring(sequence.length - end, sequence.length - start);
 
-            const evaluation = heuristicEngine.evaluatePrimerPair(fwdSeq, revSeq, {
-                targetTm: params.tm
-            });
+            for (let revStart = start + minProductSize; revStart < sequence.length - minLength && results.length < maxEvaluations; revStart += stepFwd) {
+                for (let revLen = minLength; revLen <= maxLength; revLen++) {
+                    const revEnd = revStart + revLen;
+                    if (revEnd > sequence.length) continue;
+                    const excludeRev = heuristicEngine.checkExcludedRegions(revStart, revEnd, excludedRegions);
+                    if (!excludeRev.passed) continue;
+                    const productSize = revEnd - start;
+                    if (productSize < minProductSize || productSize > maxProductSize) continue;
 
-            results.push({
-                id: `local_${i}`,
-                rank: i + 1,
-                forward: {
-                    sequence: fwdSeq,
-                    start,
-                    end,
-                    ...evaluation.forward
-                },
-                reverse: {
-                    sequence: revSeq,
-                    start: sequence.length - end,
-                    end: sequence.length - start,
-                    ...evaluation.reverse
-                },
-                totalScore: evaluation.totalScore,
-                grade: evaluation.grade,
-                warnings: evaluation.warnings,
-                recommendations: evaluation.recommendations,
-                source: 'local'
-            });
+                    const revSeq = heuristicEngine.reverseComplement(sequence.substring(revStart, revEnd));
+                    const evaluation = heuristicEngine.evaluatePrimerPair(fwdSeq, revSeq, {
+                        targetTm: params.tm,
+                        productSize,
+                        tmTolerance: advancedSettings.tmTolerance,
+                        temperatureGradient: advancedSettings.temperatureGradient,
+                        minGc: advancedSettings.minGc,
+                        maxGc: advancedSettings.maxGc,
+                        maxPolyX: advancedSettings.maxPolyX,
+                        saltNa: advancedSettings.saltNa,
+                        saltMg: advancedSettings.saltMg,
+                        dntpConc: advancedSettings.saltDntp,
+                        dnaConc: advancedSettings.saltDna,
+                        primerConc: advancedSettings.saltPrimer,
+                        checkHairpins: advancedSettings.checkHairpins,
+                        checkDimers: advancedSettings.checkDimers,
+                        checkRepeats: advancedSettings.checkRepeats,
+                        checkSpecificity: advancedSettings.checkSpecificity,
+                        specificityLevel: advancedSettings.specificityLevel,
+                        specificityOrganism: advancedSettings.specificityOrganism,
+                        thresholds: {
+                            low: advancedSettings.lowThreshold,
+                            mediumMin: advancedSettings.mediumThresholdMin,
+                            mediumMax: advancedSettings.mediumThresholdMax,
+                            high: advancedSettings.highThreshold
+                        }
+                    });
+
+                    results.push({
+                        id: `local_${results.length}`,
+                        rank: 0,
+                        forward: {
+                            sequence: fwdSeq,
+                            start,
+                            end,
+                            ...evaluation.forward
+                        },
+                        reverse: {
+                            sequence: revSeq,
+                            start: revStart,
+                            end: revEnd,
+                            ...evaluation.reverse
+                        },
+                        totalScore: evaluation.totalScore,
+                        grade: evaluation.grade,
+                        warnings: evaluation.warnings,
+                        recommendations: evaluation.recommendations,
+                        source: 'local',
+                        productSize
+                    });
+                }
+            }
         }
     }
 
-    return results.sort((a, b) => b.totalScore - a.totalScore);
+    return results
+        .sort((a, b) => b.totalScore - a.totalScore)
+        .slice(0, 10)
+        .map((r, idx) => ({ ...r, id: `local_${idx}`, rank: idx + 1 }));
 }
 
-function displayResults(results) {
+function displayResults(results, options = {}) {
+    if (!window.displayResultsCounter) window.displayResultsCounter = 0;
+    window.displayResultsCounter += 1;
+    if (typeof console !== 'undefined' && console.log) {
+        console.log(`displayResults вызван #${window.displayResultsCounter}`);
+    }
+
     const container = document.getElementById('results');
+    const connectionWarning = document.getElementById('connection-warning');
+    const warningText = document.querySelector('.connection-warning-text');
+
+    if (connectionWarning) {
+        const showWarning = options.serverUnavailable || options.serverReturnedEmpty;
+        connectionWarning.style.display = showWarning ? 'flex' : 'none';
+        if (showWarning && warningText) {
+            if (options.serverReturnedEmpty) {
+                warningText.innerHTML = 'Сервер не подобрал праймеры по заданным критериям. Показаны результаты локальной эвристики.';
+            } else {
+                warningText.innerHTML = `Сервер не ответил. URL: <code>${API_BASE_URL}</code>. Проверьте: <code>docker compose up</code> и что в консоли расширения нет CORS/сети.`;
+            }
+        }
+    }
 
     if (!results || results.length === 0) {
         container.innerHTML = '<div class="error">Не удалось подобрать праймеры</div>';
@@ -262,52 +923,139 @@ function displayResults(results) {
         return;
     }
 
+    const uniquePairs = new Map();
+    results.forEach((r) => {
+        const fwd = r?.forward?.sequence ?? '';
+        const rev = r?.reverse?.sequence ?? '';
+        const fwdStart = r?.forward?.start ?? 0;
+        const revStart = r?.reverse?.start ?? 0;
+        const key = `${fwd}_${rev}_${fwdStart}_${revStart}`;
+        if (!uniquePairs.has(key)) uniquePairs.set(key, r);
+    });
+    if (uniquePairs.size !== results.length) {
+        if (typeof console !== 'undefined' && console.warn) {
+            console.warn(`Обнаружены дубликаты пар: было ${results.length}, уникальных ${uniquePairs.size}`);
+        }
+        results = Array.from(uniquePairs.values());
+        results.sort((a, b) => (b.totalScore ?? 0) - (a.totalScore ?? 0));
+    }
+
+    const forwardGroups = {};
+    results.forEach((pair) => {
+        const fwdSeq = pair?.forward?.sequence ?? '';
+        if (!forwardGroups[fwdSeq]) forwardGroups[fwdSeq] = [];
+        forwardGroups[fwdSeq].push(pair);
+    });
+    if (typeof console !== 'undefined' && console.log) {
+        console.log(`Найдено ${Object.keys(forwardGroups).length} уникальных forward праймеров`);
+        Object.keys(forwardGroups).forEach((fwd) => {
+            const preview = fwd.length > 15 ? `${fwd.substring(0, 15)}...` : fwd;
+            console.log(`  Forward ${preview}: ${forwardGroups[fwd].length} reverse вариантов`);
+        });
+    }
+
+    if (typeof console !== 'undefined' && console.log) {
+        const r0 = results[0];
+        const f = r0?.forward; const rev = r0?.reverse;
+        console.log('=== Сравнение режимов ===');
+        console.log('Режим:', r0?.source);
+        console.log('Forward Tm:', f?.details?.tm?.value);
+        console.log('Reverse Tm:', rev?.details?.tm?.value);
+        console.log('GC%:', f?.details?.gc?.value, '/', rev?.details?.gc?.value);
+        console.log('Оценка:', r0?.totalScore);
+        console.log('Размер продукта:', rev != null && f != null ? (rev.end - f.start) : '—');
+    }
+
     let html = '<div class="results-header">';
     if (results[0].source === 'local') {
-        html += '<div class="source-badge offline">⚡ Оффлайн режим (эвристика)</div>';
+        html += '<div class="source-badge offline">⚡ Локальный режим (эвристика)</div>';
     } else {
         html += '<div class="source-badge online">☁️ Серверный режим</div>';
     }
     html += '</div>';
 
-    // Анализируем пересечения
-    const overlaps = heuristicEngine.analyzeOverlaps(results);
+    // Анализируем пересечения (пороги из расширенных настроек)
+    const overlaps = heuristicEngine.analyzeOverlaps(results, {
+        thresholds: {
+            low: advancedSettings.lowThreshold,
+            mediumMin: advancedSettings.mediumThresholdMin,
+            mediumMax: advancedSettings.mediumThresholdMax,
+            high: advancedSettings.highThreshold
+        }
+    });
+
+    const riskExplanationHtml = getRiskExplanationHtml(overlaps, currentSequence?.length ?? 0);
+    if (riskExplanationHtml) {
+        html += riskExplanationHtml;
+    }
 
     // Добавляем секцию с пересечениями если они есть
     if (overlaps.length > 0) {
+        overlapPage = 1;
+        overlapTab = 'all';
+        const overlapLevels = [...new Set(overlaps.map(o => o.conflictLevel))];
+        const tabLabels = { all: 'Все', high: 'Высокий риск', medium: 'Средний', low: 'Низкий' };
+        const tabOrder = ['all', 'high', 'medium', 'low'];
+        const tabsToShow = ['all', ...tabOrder.filter(t => t !== 'all' && overlapLevels.includes(t))];
+        let tabsHtml = '<div class="overlap-tabs">';
+        tabsToShow.forEach(t => {
+            const label = tabLabels[t] || t;
+            const active = t === 'all' ? ' active' : '';
+            tabsHtml += `<button type="button" class="overlap-tab${active}" data-overlap-tab="${t}" aria-pressed="${t === 'all'}">${label}</button>`;
+        });
+        tabsHtml += '</div>';
         html += `
             <div class="overlap-section">
                 <h3 class="overlap-title">🔗 Анализ пересечений</h3>
+                <p class="overlap-hint">Клик по карточке — выделение на графике и подробности</p>
+                ${tabsHtml}
                 <div class="overlap-grid">
         `;
         
-        overlaps.forEach(o => {
+        overlaps.forEach((o, idx) => {
+            const pageNum = Math.floor(idx / RESULTS_PER_PAGE) + 1;
             html += `
-                <div class="overlap-card overlap-${o.conflictLevel}">
+                <div class="overlap-card overlap-${o.conflictLevel}" data-overlap-index="${idx}" data-overlap-page="${pageNum}" data-conflict-level="${o.conflictLevel}" role="button" tabindex="0" style="display: none;">
                     <div class="overlap-header">
                         <span class="overlap-pairs">
-                            Пара #${parseInt(o.pair1_id.split('_')[1]) + 1} ↔ Пара #${parseInt(o.pair2_id.split('_')[1]) + 1}
+                            Пара #${getPairNumber(o.pair1_id)} ↔ Пара #${getPairNumber(o.pair2_id)}
                         </span>
                         <span class="overlap-badge">${o.overlapLength} п.н.</span>
                     </div>
                     <div class="overlap-details">
                         <div>${formatOverlapType(o.type)}</div>
-                        ${o.warning.map(w => `<div class="overlap-warning">${w}</div>`).join('')}
+                        ${(Array.isArray(o.warning) ? o.warning : (o.warning ? [o.warning] : [])).map(w => `<div class="overlap-warning">${w}</div>`).join('')}
                     </div>
                 </div>
             `;
         });
         
-        html += '</div></div>';
+        html += `
+                </div>`;
+        const overlapTotalPages = Math.max(1, Math.ceil(overlaps.length / RESULTS_PER_PAGE));
+        html += `
+                <div class="pagination-bar overlap-pagination">
+                    <button type="button" class="pagination-btn overlap-pagination-prev" aria-label="Предыдущая страница">← Назад</button>
+                    <span class="pagination-info" id="overlap-pagination-info">Страница 1 из ${overlapTotalPages}</span>
+                    <button type="button" class="pagination-btn overlap-pagination-next" aria-label="Следующая страница">Вперёд →</button>
+                </div>
+                <div class="overlap-detail" id="overlap-detail" style="display: none;" aria-live="polite"></div>
+            </div>`;
     }
 
-    // Добавляем карточки с праймерами
-    results.slice(0, 5).forEach((pair, idx) => {
+    // Карточки с праймерами (все; пагинация по 10 на страницу)
+    const totalPages = Math.max(1, Math.ceil(results.length / RESULTS_PER_PAGE));
+    resultsPage = 1;
+
+    results.forEach((pair, idx) => {
+        const pageNum = Math.floor(idx / RESULTS_PER_PAGE) + 1;
         const medal = idx === 0 ? '🥇' : idx === 1 ? '🥈' : idx === 2 ? '🥉' : '📌';
         const gradeColor = pair.grade.color;
+        const sameForwardAsPrev = idx > 0 && (results[idx - 1].forward?.sequence === pair.forward?.sequence);
 
         html += `
-            <div class="result-card" data-pair-id="${pair.id}">
+            <div class="result-card" data-pair-id="${pair.id}" data-pair-index="${idx}" data-page="${pageNum}" style="display: none;">
+                ${sameForwardAsPrev ? '<div class="same-forward-indicator">↕️ Тот же forward, другой reverse</div>' : ''}
                 <div class="card-header">
                     <div class="rank">
                         ${medal} Пара #${idx + 1}
@@ -371,10 +1119,176 @@ function displayResults(results) {
         `;
     });
 
+    // Пагинация карточек праймеров — показываем всегда (при 1 странице кнопки отключены)
+    html += `
+        <div class="pagination-bar pagination-results">
+            <button type="button" class="pagination-btn pagination-prev" aria-label="Предыдущая страница">← Назад</button>
+            <span class="pagination-info" id="pagination-info">Страница 1 из ${totalPages}</span>
+            <button type="button" class="pagination-btn pagination-next" aria-label="Следующая страница">Вперёд →</button>
+        </div>`;
+
     container.innerHTML = html;
 
+    // Показать первую страницу карточек и повесить пагинацию
+    const showPage = (page) => {
+        const totalP = Math.max(1, Math.ceil(results.length / RESULTS_PER_PAGE));
+        document.querySelectorAll('.result-card').forEach(card => {
+            card.style.display = parseInt(card.dataset.page, 10) === page ? '' : 'none';
+        });
+        const infoEl = document.getElementById('pagination-info');
+        if (infoEl) infoEl.textContent = `Страница ${page} из ${totalP}`;
+        const prevBtn = document.querySelector('.pagination-prev');
+        const nextBtn = document.querySelector('.pagination-next');
+        if (prevBtn) prevBtn.disabled = page <= 1;
+        if (nextBtn) nextBtn.disabled = page >= totalP;
+    };
+    showPage(1);
+
+    document.querySelector('.pagination-prev')?.addEventListener('click', () => {
+        if (resultsPage <= 1) return;
+        resultsPage--;
+        showPage(resultsPage);
+    });
+    document.querySelector('.pagination-next')?.addEventListener('click', () => {
+        const totalP = Math.max(1, Math.ceil(results.length / RESULTS_PER_PAGE));
+        if (resultsPage >= totalP) return;
+        resultsPage++;
+        showPage(resultsPage);
+    });
+
+    // Вкладки и пагинация карточек пересечений
+    if (overlaps.length > 0) {
+        const getIndicesForTab = (tab) => {
+            if (tab === 'all') return overlaps.map((_, i) => i);
+            return overlaps.map((o, i) => o.conflictLevel === tab ? i : -1).filter(i => i >= 0);
+        };
+        const showOverlapPage = (tab, page) => {
+            const indices = getIndicesForTab(tab);
+            const totalP = Math.max(1, Math.ceil(indices.length / RESULTS_PER_PAGE));
+            const pageIndices = indices.slice((page - 1) * RESULTS_PER_PAGE, page * RESULTS_PER_PAGE);
+            const set = new Set(pageIndices);
+            document.querySelectorAll('.overlap-card').forEach(card => {
+                const idx = parseInt(card.dataset.overlapIndex, 10);
+                card.style.display = set.has(idx) ? '' : 'none';
+            });
+            const infoEl = document.getElementById('overlap-pagination-info');
+            if (infoEl) infoEl.textContent = `Страница ${page} из ${totalP}`;
+            const prevBtn = document.querySelector('.overlap-pagination-prev');
+            const nextBtn = document.querySelector('.overlap-pagination-next');
+            if (prevBtn) prevBtn.disabled = page <= 1;
+            if (nextBtn) nextBtn.disabled = page >= totalP;
+        };
+        showOverlapPage(overlapTab, 1);
+        document.querySelectorAll('.overlap-tab').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const tab = btn.dataset.overlapTab;
+                overlapTab = tab;
+                overlapPage = 1;
+                document.querySelectorAll('.overlap-tab').forEach(b => {
+                    b.classList.toggle('active', b.dataset.overlapTab === tab);
+                    b.setAttribute('aria-pressed', b.dataset.overlapTab === tab);
+                });
+                showOverlapPage(overlapTab, overlapPage);
+            });
+        });
+        document.querySelector('.overlap-pagination-prev')?.addEventListener('click', () => {
+            if (overlapPage <= 1) return;
+            overlapPage--;
+            showOverlapPage(overlapTab, overlapPage);
+        });
+        document.querySelector('.overlap-pagination-next')?.addEventListener('click', () => {
+            const indices = getIndicesForTab(overlapTab);
+            const totalP = Math.max(1, Math.ceil(indices.length / RESULTS_PER_PAGE));
+            if (overlapPage >= totalP) return;
+            overlapPage++;
+            showOverlapPage(overlapTab, overlapPage);
+        });
+    }
+
     if (visualizer && currentSequence) {
-        visualizer.render(currentSequence.replace(/\s/g, ''), results);
+        const seq = currentSequence.replace(/\s/g, '');
+        visualizer.render(seq, results, -1);
+        if (overlaps.length > 0 && visualizer.canvas) {
+            const overlapViz = new OverlapVisualizer(visualizer.canvas);
+            overlapViz.drawOverlaps(overlaps, seq.length);
+        }
+    }
+
+    const renderVisualization = (highlightedPairIndex = -1, overlapHighlightIndex = -1) => {
+        if (!visualizer || !currentSequence) return;
+        const seq = currentSequence.replace(/\s/g, '');
+        visualizer.render(seq, results, highlightedPairIndex);
+        if (overlaps.length > 0 && visualizer.canvas) {
+            const ov = new OverlapVisualizer(visualizer.canvas);
+            ov.drawOverlaps(overlaps, seq.length, overlapHighlightIndex);
+        }
+    };
+
+    document.querySelectorAll('.result-card').forEach((card) => {
+        card.addEventListener('click', (e) => {
+            if (e.target.closest('.action-btn')) return;
+            const pairIndex = parseInt(card.dataset.pairIndex, 10);
+            if (isNaN(pairIndex)) return;
+            document.querySelectorAll('.result-card').forEach((c) => c.classList.remove('result-card-highlighted'));
+            card.classList.add('result-card-highlighted');
+            document.querySelectorAll('.overlap-card').forEach(c => c.classList.remove('highlighted'));
+            document.getElementById('visualization')?.classList.remove('visualization-overlap-highlighted');
+            renderVisualization(pairIndex, -1);
+        });
+    });
+
+    // Клик по карточке пересечения: выделение на графике + тултип с характеристиками
+    if (overlaps.length > 0 && visualizer && currentSequence) {
+        const seq = currentSequence.replace(/\s/g, '');
+        const detailEl = document.getElementById('overlap-detail');
+        const renderHighlight = (highlightIndex) => {
+            const pairIdx = document.querySelector('.result-card.result-card-highlighted')?.dataset.pairIndex;
+            const parsed = pairIdx != null ? parseInt(pairIdx, 10) : -1;
+            renderVisualization(parsed >= 0 ? parsed : -1, highlightIndex);
+        };
+        const showOverlapDetail = (o) => {
+            const warnings = Array.isArray(o.warning) ? o.warning : (o.warning ? [o.warning] : []);
+            const conflictLabels = { low: 'Низкий', medium: 'Средний', high: 'Высокий' };
+            let html = `
+                <div class="overlap-detail-inner">
+                    <h4>Характеристики пересечения</h4>
+                    <ul class="overlap-detail-list">
+                        <li><strong>Пары:</strong> #${getPairNumber(o.pair1_id)} ↔ #${getPairNumber(o.pair2_id)}</li>
+                        <li><strong>Тип:</strong> ${formatOverlapType(o.type)}</li>
+                        <li><strong>Позиция:</strong> ${o.overlapStart}–${o.overlapEnd} (${o.overlapLength} п.н.)</li>
+                        <li><strong>Уровень конфликта:</strong> ${conflictLabels[o.conflictLevel] || o.conflictLevel}</li>
+                        ${o.percentOfFirst != null ? `<li><strong>% от 1-го праймера:</strong> ${o.percentOfFirst}%</li>` : ''}
+                        ${o.percentOfSecond != null ? `<li><strong>% от 2-го праймера:</strong> ${o.percentOfSecond}%</li>` : ''}
+                        ${(o.complementaryRisk?.hasComplementarity) ? `<li class="warning">Комплементарность в перекрытии: ${o.complementaryRisk.matchPercent}%</li>` : ''}
+                    </ul>
+                    ${warnings.length ? `<div class="overlap-detail-warnings">${warnings.map(w => `<div class="overlap-warning">${w}</div>`).join('')}</div>` : ''}
+                </div>`;
+            if (detailEl) {
+                detailEl.innerHTML = html;
+                detailEl.style.display = 'block';
+            }
+        };
+        document.querySelectorAll('.overlap-card').forEach(card => {
+            card.addEventListener('click', () => {
+                const idx = parseInt(card.dataset.overlapIndex, 10);
+                if (isNaN(idx) || idx < 0) return;
+                document.querySelectorAll('.overlap-card').forEach(c => c.classList.remove('highlighted'));
+                card.classList.add('highlighted');
+                renderHighlight(idx);
+                showOverlapDetail(overlaps[idx]);
+                const vizEl = document.getElementById('visualization');
+                if (vizEl) {
+                    vizEl.classList.add('visualization-overlap-highlighted');
+                    vizEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                }
+            });
+            card.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    card.click();
+                }
+            });
+        });
     }
 
     // Добавляем обработчики для кнопок
@@ -547,9 +1461,28 @@ function showNotification(message) {
     }, 2000);
 }
 
+function showWarning(message) {
+    const notification = document.createElement('div');
+    notification.className = 'notification notification-warning';
+    notification.textContent = message;
+    document.body.appendChild(notification);
+    setTimeout(() => notification.remove(), 4500);
+}
+
 function formatSequence(seq) {
     if (seq.length <= 25) return seq;
     return seq.substring(0, 20) + '...' + seq.slice(-5);
+}
+
+function getRiskExplanationHtml(overlaps, seqLength) {
+    if (!overlaps || overlaps.length === 0 || seqLength >= 200) return '';
+    const highRiskCount = overlaps.filter((o) => o.conflictLevel === 'high').length;
+    if (highRiskCount !== overlaps.length) return '';
+    return `
+        <div class="risk-explanation" role="alert">
+            ⚠️ Все пересечения высокого риска из-за короткой последовательности.
+            Для получения вариативных результатов используйте последовательность &gt;300 нт.
+        </div>`;
 }
 
 function formatOverlapType(type) {
@@ -565,6 +1498,8 @@ function formatOverlapType(type) {
 async function clearForm() {
     document.getElementById('sequence').value = '';
     document.getElementById('results').innerHTML = '';
+    const connectionWarning = document.getElementById('connection-warning');
+    if (connectionWarning) connectionWarning.style.display = 'none';
     updateSequenceStats('');
     currentSequence = '';
     if (visualizer) visualizer.render('', []);
@@ -604,7 +1539,15 @@ async function useNCBIData() {
     }
 }
 
+async function useNCBIDataAndDesign() {
+    await useNCBIData();
+    if (currentSequence && currentSequence.length >= 50) {
+        designPrimers();
+    }
+}
+
 async function saveSettings() {
+    const forceOfflineEl = document.getElementById('force-offline');
     settings = {
         defaultTm: parseFloat(document.getElementById('tm').value),
         defaultGc: parseFloat(document.getElementById('gc').value),
@@ -612,10 +1555,12 @@ async function saveSettings() {
         autoSync: document.getElementById('auto-sync').checked,
         notifications: document.getElementById('notifications').checked,
         autoDesign: document.getElementById('auto-design').checked,
-        theme: document.getElementById('theme').value
+        theme: document.getElementById('theme').value,
+        forceOfflineMode: forceOfflineEl ? forceOfflineEl.checked : false
     };
 
     await storage.set('settings', settings);
+    updateStatusDisplay();
 }
 
 function exportData() {
@@ -761,3 +1706,28 @@ overlapStyles.textContent = `
 `;
 
 document.head.appendChild(overlapStyles);
+
+const statusStyles = document.createElement('style');
+statusStyles.textContent = `
+    .status-block { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+    .status-row { display: flex; align-items: center; gap: 8px; }
+    .status-mode { font-size: 11px; font-weight: 600; padding: 2px 6px; border-radius: 4px; }
+    .status-mode.mode-server { background: #dbeafe; color: #1d4ed8; }
+    .status-mode.mode-local { background: #fef3c7; color: #b45309; }
+    .status-mode-toggle { font-size: 10px; padding: 2px 8px; border: 1px solid #e2e8f0; border-radius: 4px; background: #f8fafc; color: #64748b; cursor: pointer; }
+    .status-mode-toggle:hover { background: #e2e8f0; color: #334155; }
+    .connection-warning { display: flex; align-items: flex-start; gap: 8px; margin: 12px 0; padding: 12px; background: #fffbeb; border: 1px solid #f59e0b; border-radius: 8px; font-size: 12px; color: #92400e; }
+    .connection-warning-icon { flex-shrink: 0; }
+    .connection-warning code { font-size: 11px; background: rgba(0,0,0,0.06); padding: 1px 4px; border-radius: 4px; }
+    .notification { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); padding: 10px 16px; border-radius: 8px; font-size: 13px; z-index: 9999; box-shadow: 0 4px 12px rgba(0,0,0,0.15); background: #334155; color: #fff; }
+    .notification-warning { background: #b45309; color: #fff; border: 1px solid #92400e; }
+    .risk-explanation { margin: 12px 0; padding: 12px; background: #fffbeb; border: 1px solid #f59e0b; border-radius: 8px; font-size: 12px; color: #92400e; }
+    .same-forward-indicator { margin: 0 0 8px 0; padding: 6px 10px; background: #eff6ff; border-left: 3px solid #3b82f6; border-radius: 4px; font-size: 11px; color: #1d4ed8; }
+    .result-card.result-card-highlighted { background: rgba(239, 246, 255, 0.6); }
+    #visualization { overflow: hidden; max-width: 100%; position: relative; z-index: 0; }
+    #visualization.visualization-overlap-highlighted { z-index: 5; }
+    #visualization canvas { max-width: 100%; box-sizing: border-box; }
+    .overlap-section { position: relative; z-index: 2; }
+    .overlap-card { position: relative; z-index: 1; pointer-events: auto; }
+`;
+document.head.appendChild(statusStyles);

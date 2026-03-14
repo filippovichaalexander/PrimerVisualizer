@@ -127,3 +127,11 @@ Reverse: 3'-TCGATCGATCGATCGATCGATC-5' (Tm: 60.8°C, GC: 48%)
 Получает подтверждение синхронизации
 
 Все сохраненные данные становятся доступны в облаке
+
+
+
+docker compose up -d backend primer3-service
+
+docker compose down
+docker compose up -d backend primer3-service
+
