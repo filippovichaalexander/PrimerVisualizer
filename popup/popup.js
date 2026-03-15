@@ -30,10 +30,20 @@ function normalizeResults(results, sourceHint = null) {
         const rDetails = rev.details || {};
         const rTm = rDetails.tm && typeof rDetails.tm === 'object' ? rDetails.tm.value : rDetails.tm;
         const rGc = rDetails.gc && typeof rDetails.gc === 'object' ? rDetails.gc.value : rDetails.gc;
+        const rawScore = r.totalScore ?? r.total_score;
+        const totalScore = rawScore != null && Number.isFinite(Number(rawScore)) ? Number(rawScore) : null;
+        const gradeObj = r.grade && typeof r.grade === 'object' ? r.grade : {};
+        const grade = {
+            letter: gradeObj.letter ?? '—',
+            color: gradeObj.color ?? '#94a3b8',
+            description: gradeObj.description ?? '',
+        };
         return {
             ...r,
             id,
             rank: r.rank != null ? r.rank : i + 1,
+            totalScore,
+            grade,
             forward: {
                 sequence: f.sequence ?? '',
                 start: f.start ?? 0,
@@ -72,6 +82,7 @@ let settings = {};
 let advancedSettings = {};
 let visualizer = null;
 let vizZoom = 1;
+let currentOverlaps = [];
 let onVizRedraw = null;
 function setVizRedraw(fn) { onVizRedraw = fn; }
 
@@ -82,6 +93,29 @@ function scrollVizToCenter() {
     if (!seq.length) return;
     const centerX = 20 + (seq.length / 2) * visualizer.scale;
     scrollEl.scrollLeft = Math.max(0, centerX - scrollEl.clientWidth / 2);
+}
+
+function updateOverlapVisualizationForCurrent() {
+    if (!visualizer || !currentSequence || !currentResults || !currentResults.length) return;
+    const seq = currentSequence.replace(/\s/g, '');
+    const overlaps = heuristicEngine.analyzeOverlaps(currentResults, {
+        thresholds: {
+            low: advancedSettings.lowThreshold,
+            mediumMin: advancedSettings.mediumThresholdMin,
+            mediumMax: advancedSettings.mediumThresholdMax,
+            high: advancedSettings.highThreshold
+        }
+    });
+    currentOverlaps = overlaps;
+    const pairIdxAttr = document.querySelector('.result-card.result-card-highlighted')?.dataset.pairIndex;
+    const overlapIdxAttr = document.querySelector('.overlap-card.highlighted')?.dataset.overlapIndex;
+    const pairIndex = pairIdxAttr != null ? parseInt(pairIdxAttr, 10) : -1;
+    const overlapIndex = overlapIdxAttr != null ? parseInt(overlapIdxAttr, 10) : -1;
+    visualizer.render(seq, currentResults, isNaN(pairIndex) ? -1 : pairIndex, vizZoom);
+    if (overlaps.length > 0 && visualizer.canvas) {
+        const ov = new OverlapVisualizer(visualizer.canvas);
+        ov.drawOverlaps(overlaps, seq.length, isNaN(overlapIndex) ? -1 : overlapIndex);
+    }
 }
 
 document.addEventListener('DOMContentLoaded', async () => {
@@ -194,6 +228,20 @@ function updateAdvancedSettingsUI() {
     if (checkRepeats) checkRepeats.checked = advancedSettings.checkRepeats;
 }
 
+function getTooltipForSetting(setting) {
+    const tips = {
+        stepSize: 'Меньший шаг — точнее в GC-богатых регионах, но медленнее поиск. 💻 Только локально.',
+        minProductSize: 'Для qPCR чаще 80–200 п.н.; для клонирования — 200+ п.н. ☁️ Отправляется на сервер.',
+        maxProductSize: 'Большие продукты сложнее усиливать и анализировать. ☁️ Отправляется на сервер.',
+        tmTolerance: 'Меньший допуск — более одинаковые Tm пары, но меньше кандидатов. ☁️ Сервер, 💻 локально.',
+        minGc: 'Слишком низкий GC снижает Tm и стабильность праймера. ☁️ Отправляется на сервер.',
+        maxGc: 'Слишком высокий GC повышает риск шпилек и димеров. ☁️ Отправляется на сервер.',
+        temperatureGradient: 'Разница между Tm и температурой отжига. ☁️ Сервер, 💻 локально.',
+        excludeRegions: 'Регионы, где не выбирать праймеры. ☁️ Сервер, 💻 локально.'
+    };
+    return tips[setting] || '';
+}
+
 function updateThresholdDisplay() {
     const lowValue = document.getElementById('low-threshold-value');
     if (lowValue) lowValue.textContent = `0-${advancedSettings.lowThreshold}%`;
@@ -254,6 +302,20 @@ function updateNewSettingsUI() {
     if (organismSelect) organismSelect.value = advancedSettings.specificityOrganism;
 }
 
+function validateExcludeRegion(start, end, sequenceLength) {
+    const errors = [];
+    if (start < 0 || end < 0) errors.push('Координаты не могут быть отрицательными');
+    if (sequenceLength > 0 && start >= sequenceLength) {
+        errors.push(`Начало региона (${start}) выходит за длину последовательности (${sequenceLength})`);
+    }
+    if (sequenceLength > 0 && end > sequenceLength) {
+        errors.push(`Конец региона (${end}) выходит за длину последовательности (${sequenceLength})`);
+    }
+    if (end <= start) errors.push('Конец региона должен быть больше начала');
+    if (end - start < 1) errors.push('Регион должен быть длиной минимум 1 нуклеотид');
+    return errors;
+}
+
 function updateExcludeRegionsList() {
     const listEl = document.getElementById('exclude-list');
     if (!listEl) return;
@@ -261,17 +323,43 @@ function updateExcludeRegionsList() {
         listEl.innerHTML = '<div class="exclude-empty">Нет исключенных регионов</div>';
         return;
     }
+    advancedSettings.excludeRegions.sort((a, b) => a.start - b.start);
     let html = '';
     advancedSettings.excludeRegions.forEach((region, index) => {
-        html += `<div class="exclude-item"><span>${region.start}-${region.end}</span><button type="button" class="exclude-remove" data-index="${index}">✕</button></div>`;
+        const length = region.end - region.start;
+        html += `
+            <div class="exclude-item" data-index="${index}">
+                <span class="exclude-range">${region.start}-${region.end}</span>
+                <span class="exclude-length">${length} п.н.</span>
+                <button type="button" class="exclude-remove" data-index="${index}" title="Удалить регион">✕</button>
+            </div>
+        `;
     });
     listEl.innerHTML = html;
     listEl.querySelectorAll('.exclude-remove').forEach(btn => {
         btn.addEventListener('click', (e) => {
+            e.stopPropagation();
             const index = parseInt(e.currentTarget.dataset.index, 10);
             advancedSettings.excludeRegions.splice(index, 1);
             updateExcludeRegionsList();
             storage.set('advancedSettings', advancedSettings);
+            showNotification('✅ Регион удален');
+        });
+    });
+    listEl.querySelectorAll('.exclude-item').forEach(item => {
+        item.addEventListener('click', (e) => {
+            if (e.target.classList.contains('exclude-remove')) return;
+            const index = parseInt(item.dataset.index, 10);
+            const region = advancedSettings.excludeRegions[index];
+            const action = confirm(
+                `Регион: ${region.start}-${region.end} (${region.end - region.start} п.н.)\n\nНажмите OK для удаления\nНажмите Отмена для отмены`
+            );
+            if (action) {
+                advancedSettings.excludeRegions.splice(index, 1);
+                updateExcludeRegionsList();
+                storage.set('advancedSettings', advancedSettings);
+                showNotification('✅ Регион удален');
+            }
         });
     });
 }
@@ -423,6 +511,15 @@ function updateStatusDisplay() {
         toggleBtn.textContent = forceOffline ? 'Переключить на сервер' : 'Переключить на локально';
         toggleBtn.className = 'status-mode-toggle ' + (forceOffline ? 'mode-local' : 'mode-server');
     }
+    updateSettingsModeIndicators();
+}
+
+function updateSettingsModeIndicators() {
+    const container = document.getElementById('advanced-settings-container');
+    if (!container) return;
+    const isServerMode = navigator.onLine && !(settings.forceOfflineMode || false);
+    container.classList.remove('local-mode', 'server-mode');
+    container.classList.add(isServerMode ? 'server-mode' : 'local-mode');
 }
 
 function toggleForceOfflineMode() {
@@ -476,6 +573,7 @@ function setupEventListeners() {
 
     const saveAdvancedSettings = () => storage.set('advancedSettings', advancedSettings);
     const debouncedSaveAdvanced = debounce(saveAdvancedSettings, 500);
+    const debouncedUpdateOverlaps = debounce(updateOverlapVisualizationForCurrent, 250);
 
     const stepSlider = document.getElementById('step-slider');
     if (stepSlider) {
@@ -528,6 +626,7 @@ function setupEventListeners() {
             }
             updateThresholdDisplay();
             debouncedSaveAdvanced();
+            debouncedUpdateOverlaps();
         });
     }
     if (mediumMax) {
@@ -539,6 +638,7 @@ function setupEventListeners() {
             }
             updateThresholdDisplay();
             debouncedSaveAdvanced();
+            debouncedUpdateOverlaps();
         });
     }
     const highSlider = document.getElementById('high-threshold-slider');
@@ -547,6 +647,7 @@ function setupEventListeners() {
             advancedSettings.highThreshold = parseInt(e.target.value, 10);
             updateThresholdDisplay();
             debouncedSaveAdvanced();
+            debouncedUpdateOverlaps();
         });
     }
     const tmTolSlider = document.getElementById('tm-tolerance-slider');
@@ -592,6 +693,45 @@ function setupEventListeners() {
             applyPreset(e.currentTarget.dataset.preset);
         });
     });
+    const savePresetBtn = document.getElementById('save-custom-preset');
+    if (savePresetBtn) {
+        savePresetBtn.addEventListener('click', async () => {
+            const name = prompt('Название пресета (например, \"qPCR_мой\")');
+            if (!name) return;
+            const key = `customPreset_${name.trim()}`;
+            await storage.set(key, { ...advancedSettings });
+            console.log('Сохранён пресет', key);
+        });
+    }
+    const exportBtn = document.getElementById('export-advanced-settings');
+    if (exportBtn) {
+        exportBtn.addEventListener('click', async () => {
+            const json = JSON.stringify(advancedSettings, null, 2);
+            try {
+                await navigator.clipboard.writeText(json);
+                alert('Настройки скопированы в буфер обмена.');
+            } catch {
+                prompt('Скопируйте настройки вручную:', json);
+            }
+        });
+    }
+    const importBtn = document.getElementById('import-advanced-settings');
+    if (importBtn) {
+        importBtn.addEventListener('click', async () => {
+            const json = prompt('Вставьте JSON настроек advancedSettings:');
+            if (!json) return;
+            try {
+                const parsed = JSON.parse(json);
+                Object.assign(advancedSettings, parsed);
+                updateAdvancedSettingsUI();
+                updateNewSettingsUI();
+                await storage.set('advancedSettings', advancedSettings);
+                updateOverlapVisualizationForCurrent();
+            } catch (e) {
+                alert('Не удалось разобрать JSON настроек: ' + (e.message || e));
+            }
+        });
+    }
 
     const polyxSlider = document.getElementById('polyx-slider');
     if (polyxSlider) {
@@ -622,27 +762,91 @@ function setupEventListeners() {
     const excludeAddBtn = document.getElementById('exclude-add-btn');
     if (excludeAddBtn) {
         excludeAddBtn.addEventListener('click', () => {
-            const start = parseInt(document.getElementById('exclude-start').value, 10);
-            const end = parseInt(document.getElementById('exclude-end').value, 10);
-            if (!isNaN(start) && !isNaN(end) && start >= 0 && end > start) {
+            const startInput = document.getElementById('exclude-start');
+            const endInput = document.getElementById('exclude-end');
+            const start = parseInt(startInput.value, 10);
+            const end = parseInt(endInput.value, 10);
+            if (isNaN(start) || isNaN(end)) {
+                showNotification('❌ Введите числа для начала и конца региона');
+                return;
+            }
+            const sequenceLength = (currentSequence || '').replace(/\s/g, '').length || 0;
+            const validationErrors = validateExcludeRegion(start, end, sequenceLength);
+            if (validationErrors.length > 0) {
+                showNotification('❌ ' + validationErrors.join('. '));
+                return;
+            }
+            const isDuplicate = advancedSettings.excludeRegions?.some(
+                region => region.start === start && region.end === end
+            );
+            if (isDuplicate) {
+                showNotification('⚠️ Этот регион уже исключен');
+                return;
+            }
+            const hasOverlap = advancedSettings.excludeRegions?.some(region => {
+                const overlap1 = start >= region.start && start < region.end;
+                const overlap2 = end > region.start && end <= region.end;
+                const contains = start <= region.start && end >= region.end;
+                const inside = start >= region.start && end <= region.end;
+                return overlap1 || overlap2 || contains || inside;
+            });
+            if (hasOverlap) {
+                const confirmOverlap = confirm(
+                    '⚠️ Этот регион пересекается с существующим исключенным регионом.\n\nХотите объединить их?'
+                );
+                if (confirmOverlap) {
+                    let newStart = start;
+                    let newEnd = end;
+                    advancedSettings.excludeRegions.forEach(region => {
+                        if (start <= region.end && end >= region.start) {
+                            newStart = Math.min(newStart, region.start);
+                            newEnd = Math.max(newEnd, region.end);
+                        }
+                    });
+                    advancedSettings.excludeRegions = advancedSettings.excludeRegions.filter(
+                        region => !(start <= region.end && end >= region.start)
+                    );
+                    advancedSettings.excludeRegions.push({ start: newStart, end: newEnd });
+                } else {
+                    return;
+                }
+            } else {
                 if (!advancedSettings.excludeRegions) advancedSettings.excludeRegions = [];
                 advancedSettings.excludeRegions.push({ start, end });
-                advancedSettings.excludeRegions.sort((a, b) => a.start - b.start);
-                updateExcludeRegionsList();
-                document.getElementById('exclude-start').value = '';
-                document.getElementById('exclude-end').value = '';
-                debouncedSaveAdvanced();
             }
+            advancedSettings.excludeRegions.sort((a, b) => a.start - b.start);
+            updateExcludeRegionsList();
+            startInput.value = '';
+            endInput.value = '';
+            storage.set('advancedSettings', advancedSettings);
+            showNotification('✅ Регион добавлен');
         });
     }
     document.querySelectorAll('.exclude-preset').forEach(btn => {
         btn.addEventListener('click', (e) => {
             const preset = e.currentTarget.dataset.preset;
-            let start = 0, end = 50;
-            if (preset === 'repeats') { start = 200; end = 250; }
-            else if (preset === 'snp') { start = 450; end = 451; }
+            const seqLength = (currentSequence || '').replace(/\s/g, '').length || 500;
+            let start, end;
+            switch (preset) {
+                case 'low-complexity':
+                    start = 0;
+                    end = Math.min(50, seqLength);
+                    break;
+                case 'repeats':
+                    start = Math.min(200, Math.max(0, seqLength - 100));
+                    end = Math.min(start + 50, seqLength);
+                    break;
+                case 'snp':
+                    start = Math.min(450, Math.max(0, seqLength - 1));
+                    end = start + 1;
+                    break;
+                default:
+                    start = 0;
+                    end = Math.min(50, seqLength);
+            }
             document.getElementById('exclude-start').value = start;
             document.getElementById('exclude-end').value = end;
+            showNotification(`📋 Пресет «${preset}» готов к добавлению`);
         });
     });
     const checkSpecificity = document.getElementById('check-specificity');
@@ -672,6 +876,11 @@ function setupEventListeners() {
     advInputs.forEach(el => {
         el.addEventListener('change', debouncedSaveAdvanced);
         el.addEventListener('input', debouncedSaveAdvanced);
+    });
+    document.querySelectorAll('[data-setting-tooltip]').forEach(el => {
+        const key = el.getAttribute('data-setting-tooltip');
+        const tip = getTooltipForSetting(key);
+        if (tip) el.title = tip;
     });
 
     const vizZoomValueEl = document.getElementById('viz-zoom-value');
@@ -795,6 +1004,13 @@ async function designWithServer(sequence, params) {
     }
     if (advancedSettings.minGc != null) body.minGc = advancedSettings.minGc;
     if (advancedSettings.maxGc != null) body.maxGc = advancedSettings.maxGc;
+    if (advancedSettings.tmTolerance != null) body.tmTolerance = advancedSettings.tmTolerance;
+    if (advancedSettings.temperatureGradient != null) body.temperatureGradient = advancedSettings.temperatureGradient;
+    if (typeof console !== 'undefined' && console.log) {
+        const debugPayload = { ...body };
+        if (debugPayload.sequence) debugPayload.sequence = debugPayload.sequence.length + ' нт';
+        console.log('Отправка на сервер (design):', debugPayload);
+    }
     try {
         const response = await fetch(url, {
             method: 'POST',
@@ -836,9 +1052,32 @@ function designLocally(sequence, params) {
     const minLength = 18;
     const maxLength = 28;
     const stepFwd = advancedSettings.stepSize || 3;
+    const minDistance = advancedSettings.minDistance || 50;
     const minProductSize = advancedSettings.minProductSize || 50;
     const maxProductSize = advancedSettings.maxProductSize || 2000;
     const excludedRegions = advancedSettings.excludeRegions || [];
+    const maxPolyX = advancedSettings.maxPolyX ?? 4;
+    const tmTolerance = advancedSettings.tmTolerance ?? 3;
+    const temperatureGradient = advancedSettings.temperatureGradient ?? 5;
+    const minGc = advancedSettings.minGc ?? 35;
+    const maxGc = advancedSettings.maxGc ?? 65;
+    const saltParams = {
+        saltNa: advancedSettings.saltNa ?? 50,
+        saltMg: advancedSettings.saltMg ?? 1.5,
+        dntpConc: advancedSettings.saltDntp ?? 0.2,
+        dnaConc: advancedSettings.saltDna ?? 50,
+        primerConc: advancedSettings.saltPrimer ?? 200
+    };
+    const thresholds = {
+        low: advancedSettings.lowThreshold ?? 15,
+        mediumMin: advancedSettings.mediumThresholdMin ?? 15,
+        mediumMax: advancedSettings.mediumThresholdMax ?? 40,
+        high: advancedSettings.highThreshold ?? 40
+    };
+    const checkHairpins = advancedSettings.checkHairpins !== false;
+    const checkDimers = advancedSettings.checkDimers !== false;
+    const checkRepeats = advancedSettings.checkRepeats !== false;
+    const checkSpecificity = !!advancedSettings.checkSpecificity;
     const maxEvaluations = 6000;
 
     for (let start = 0; start < sequence.length - minLength && results.length < maxEvaluations; start += stepFwd) {
@@ -849,7 +1088,8 @@ function designLocally(sequence, params) {
             if (!excludeCheck.passed) continue;
             const fwdSeq = sequence.substring(start, end);
 
-            for (let revStart = start + minProductSize; revStart < sequence.length - minLength && results.length < maxEvaluations; revStart += stepFwd) {
+            const minRevStart = start + Math.max(minDistance, minProductSize - maxLength);
+            for (let revStart = minRevStart; revStart < sequence.length - minLength && results.length < maxEvaluations; revStart += stepFwd) {
                 for (let revLen = minLength; revLen <= maxLength; revLen++) {
                     const revEnd = revStart + revLen;
                     if (revEnd > sequence.length) continue;
@@ -862,28 +1102,19 @@ function designLocally(sequence, params) {
                     const evaluation = heuristicEngine.evaluatePrimerPair(fwdSeq, revSeq, {
                         targetTm: params.tm,
                         productSize,
-                        tmTolerance: advancedSettings.tmTolerance,
-                        temperatureGradient: advancedSettings.temperatureGradient,
-                        minGc: advancedSettings.minGc,
-                        maxGc: advancedSettings.maxGc,
-                        maxPolyX: advancedSettings.maxPolyX,
-                        saltNa: advancedSettings.saltNa,
-                        saltMg: advancedSettings.saltMg,
-                        dntpConc: advancedSettings.saltDntp,
-                        dnaConc: advancedSettings.saltDna,
-                        primerConc: advancedSettings.saltPrimer,
-                        checkHairpins: advancedSettings.checkHairpins,
-                        checkDimers: advancedSettings.checkDimers,
-                        checkRepeats: advancedSettings.checkRepeats,
-                        checkSpecificity: advancedSettings.checkSpecificity,
-                        specificityLevel: advancedSettings.specificityLevel,
-                        specificityOrganism: advancedSettings.specificityOrganism,
-                        thresholds: {
-                            low: advancedSettings.lowThreshold,
-                            mediumMin: advancedSettings.mediumThresholdMin,
-                            mediumMax: advancedSettings.mediumThresholdMax,
-                            high: advancedSettings.highThreshold
-                        }
+                        tmTolerance,
+                        temperatureGradient,
+                        minGc,
+                        maxGc,
+                        maxPolyX,
+                        ...saltParams,
+                        checkHairpins,
+                        checkDimers,
+                        checkRepeats,
+                        checkSpecificity,
+                        specificityLevel: advancedSettings.specificityLevel || 'strict',
+                        specificityOrganism: advancedSettings.specificityOrganism || 'human',
+                        thresholds
                     });
 
                     results.push({
@@ -1076,7 +1307,9 @@ function displayResults(results, options = {}) {
     results.forEach((pair, idx) => {
         const pageNum = Math.floor(idx / RESULTS_PER_PAGE) + 1;
         const medal = idx === 0 ? '🥇' : idx === 1 ? '🥈' : idx === 2 ? '🥉' : '📌';
-        const gradeColor = pair.grade.color;
+        const gradeColor = pair.grade?.color ?? '#94a3b8';
+        const gradeLetter = pair.grade?.letter ?? '—';
+        const scoreDisplay = pair.totalScore != null && Number.isFinite(pair.totalScore) ? pair.totalScore : '—';
         const sameForwardAsPrev = idx > 0 && (results[idx - 1].forward?.sequence === pair.forward?.sequence);
 
         html += `
@@ -1087,7 +1320,7 @@ function displayResults(results, options = {}) {
                         ${medal} Пара #${idx + 1}
                     </div>
                     <div class="grade" style="background: ${gradeColor}20; color: ${gradeColor}">
-                        ${pair.grade.letter} (${pair.totalScore})
+                        ${gradeLetter} (${scoreDisplay})
                     </div>
                 </div>
 

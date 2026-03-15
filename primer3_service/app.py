@@ -180,13 +180,17 @@ def design():
         except (TypeError, ValueError):
             continue
 
+    tm_tolerance = float(body.get("tmTolerance", 3))
+    temperature_gradient = float(body.get("temperatureGradient", 5))
+    effective_target_tm = target_tm - temperature_gradient / 2
+
     if os.environ.get("PRIMER3_DEBUG"):
         print(
-            f"Request: tm={target_tm}, gc={target_gc}, length={length}, "
+            f"Request: tm={target_tm}, tm_tolerance={tm_tolerance}, gradient={temperature_gradient}, "
+            f"effective_tm={effective_target_tm}, gc={target_gc}, length={length}, "
             f"min_product={min_product}, max_product={max_product}, exclude_regions={len(excluded_boulder)}"
         )
 
-    # Для экстремально GC-богатых или GC-бедных последовательностей расширяем диапазон GC
     seq_gc = _calc_gc(sequence)
     if seq_gc > 75:
         min_gc = max(20, target_gc - 25)
@@ -201,8 +205,8 @@ def design():
     else:
         min_gc = max(20, target_gc - 15)
         max_gc = min(80, target_gc + 15)
-        min_tm = target_tm - 3
-        max_tm = target_tm + 3
+        min_tm = effective_target_tm - tm_tolerance
+        max_tm = effective_target_tm + tm_tolerance
 
     if body.get("minGc") is not None:
         try:
@@ -223,7 +227,7 @@ def design():
         seq_args["SEQUENCE_EXCLUDED_REGION"] = excluded_boulder
 
     global_args = {
-        "PRIMER_OPT_TM": target_tm,
+        "PRIMER_OPT_TM": effective_target_tm,
         "PRIMER_MIN_TM": min_tm,
         "PRIMER_MAX_TM": max_tm,
         "PRIMER_OPT_SIZE": length,
