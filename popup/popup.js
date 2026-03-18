@@ -6,7 +6,26 @@ import { API_BASE_URL } from '../config.js';
 const heuristicEngine = new PrimerHeuristicEngine();
 const storage = new StorageManager();
 
-const RESULTS_PER_PAGE = 10;
+/** Пар на странице в центральной колонке (высота колонки фиксирована). */
+const PRIMER_RESULTS_PER_PAGE = 3;
+/** Пересечений на странице в правой колонке (под полосой пагинации). */
+const OVERLAP_PER_PAGE = 8;
+
+function overlapPaginationIdleHtml() {
+    return `<div class="pagination-bar overlap-pagination overlap-pagination-idle">
+        <button type="button" class="pagination-btn" disabled tabindex="-1">←</button>
+        <span class="pagination-info">—</span>
+        <button type="button" class="pagination-btn" disabled tabindex="-1">→</button>
+    </div>`;
+}
+
+/** Правая колонка: график и «Анализ пересечений» только после успешного подбора. */
+function setPanelRightAnalysisVisible(visible) {
+    const invite = document.getElementById('panel-right-invite');
+    const analysis = document.getElementById('panel-right-analysis');
+    if (invite) invite.style.display = visible ? 'none' : 'flex';
+    if (analysis) analysis.style.display = visible ? 'flex' : 'none';
+}
 
 /** Извлекает номер пары из id (server_primer3_0 → 1, local_2 → 3) для отображения. */
 function getPairNumber(id) {
@@ -120,6 +139,7 @@ function updateOverlapVisualizationForCurrent() {
 
 document.addEventListener('DOMContentLoaded', async () => {
     visualizer = new DNAVisualizer('visualization');
+    setPanelRightAnalysisVisible(false);
 
     await loadSettings();
     await loadStats();
@@ -192,6 +212,20 @@ async function loadSettings() {
     updateStatusDisplay();
 }
 
+function updateSidebarKv() {
+    const pr = document.getElementById('sidebar-kv-product');
+    const tm = document.getElementById('sidebar-kv-tm');
+    const gc = document.getElementById('sidebar-kv-gc');
+    const mp = document.getElementById('min-product-size');
+    const xp = document.getElementById('max-product-size');
+    const tmv = document.getElementById('tm-tolerance-value');
+    const mg = document.getElementById('min-gc');
+    const xg = document.getElementById('max-gc');
+    if (pr && mp && xp) pr.textContent = `${mp.value}–${xp.value} п.н.`;
+    if (tm && tmv) tm.textContent = tmv.textContent;
+    if (gc && mg && xg) gc.textContent = `мин ${mg.value} | макс ${xg.value}`;
+}
+
 function updateAdvancedSettingsUI() {
     const stepSlider = document.getElementById('step-slider');
     const stepValue = document.getElementById('step-value');
@@ -226,6 +260,7 @@ function updateAdvancedSettingsUI() {
     if (checkHairpins) checkHairpins.checked = advancedSettings.checkHairpins;
     if (checkDimers) checkDimers.checked = advancedSettings.checkDimers;
     if (checkRepeats) checkRepeats.checked = advancedSettings.checkRepeats;
+    updateSidebarKv();
 }
 
 function getTooltipForSetting(setting) {
@@ -603,6 +638,7 @@ function setupEventListeners() {
                 if (maxProduct) maxProduct.value = advancedSettings.maxProductSize;
             }
             debouncedSaveAdvanced();
+            updateSidebarKv();
         });
     }
     if (maxProduct) {
@@ -613,6 +649,7 @@ function setupEventListeners() {
                 if (minProduct) minProduct.value = advancedSettings.minProductSize;
             }
             debouncedSaveAdvanced();
+            updateSidebarKv();
         });
     }
     const mediumMin = document.getElementById('medium-threshold-min');
@@ -657,6 +694,7 @@ function setupEventListeners() {
             const v = document.getElementById('tm-tolerance-value');
             if (v) v.textContent = `±${e.target.value}°C`;
             debouncedSaveAdvanced();
+            updateSidebarKv();
         });
     }
     const minGcEl = document.getElementById('min-gc');
@@ -669,6 +707,7 @@ function setupEventListeners() {
                 if (maxGcEl) maxGcEl.value = advancedSettings.maxGc;
             }
             debouncedSaveAdvanced();
+            updateSidebarKv();
         });
     }
     if (maxGcEl) {
@@ -679,6 +718,7 @@ function setupEventListeners() {
                 if (minGcEl) minGcEl.value = advancedSettings.minGc;
             }
             debouncedSaveAdvanced();
+            updateSidebarKv();
         });
     }
     const checkHairpins = document.getElementById('check-hairpins');
@@ -910,6 +950,9 @@ function setupTabs() {
                 pane.classList.remove('active');
             });
             document.getElementById(`tab-${tabName}`).classList.add('active');
+
+            const sdo = document.getElementById('sidebar-design-only');
+            if (sdo) sdo.style.display = tabName === 'design' ? '' : 'none';
 
             if (tabName === 'saved') loadSavedPrimers();
             if (tabName === 'history') loadHistory();
@@ -1157,7 +1200,8 @@ function displayResults(results, options = {}) {
         console.log(`displayResults вызван #${window.displayResultsCounter}`);
     }
 
-    const container = document.getElementById('results');
+    const primersEl = document.getElementById('results-primers');
+    const overlapEl = document.getElementById('overlap-dynamic');
     const connectionWarning = document.getElementById('connection-warning');
     const warningText = document.querySelector('.connection-warning-text');
 
@@ -1174,7 +1218,11 @@ function displayResults(results, options = {}) {
     }
 
     if (!results || results.length === 0) {
-        container.innerHTML = '<div class="error">Не удалось подобрать праймеры</div>';
+        if (primersEl) primersEl.innerHTML = '<div class="error">Не удалось подобрать праймеры</div>';
+        if (overlapEl) overlapEl.innerHTML = '';
+        const strip0 = document.getElementById('overlap-pagination-strip');
+        if (strip0) strip0.innerHTML = overlapPaginationIdleHtml();
+        setPanelRightAnalysisVisible(false);
         if (visualizer) visualizer.render('', []);
         return;
     }
@@ -1222,15 +1270,8 @@ function displayResults(results, options = {}) {
         console.log('Размер продукта:', rev != null && f != null ? (rev.end - f.start) : '—');
     }
 
-    let html = '<div class="results-header">';
-    if (results[0].source === 'local') {
-        html += '<div class="source-badge offline">⚡ Локальный режим (эвристика)</div>';
-    } else {
-        html += '<div class="source-badge online">☁️ Серверный режим</div>';
-    }
-    html += '</div>';
+    let htmlPrimers = '';
 
-    // Анализируем пересечения (пороги из расширенных настроек)
     const overlaps = heuristicEngine.analyzeOverlaps(results, {
         thresholds: {
             low: advancedSettings.lowThreshold,
@@ -1242,15 +1283,16 @@ function displayResults(results, options = {}) {
 
     const riskExplanationHtml = getRiskExplanationHtml(overlaps, currentSequence?.length ?? 0);
     if (riskExplanationHtml) {
-        html += riskExplanationHtml;
+        htmlPrimers += riskExplanationHtml;
     }
 
-    // Добавляем секцию с пересечениями если они есть
+    let htmlOverlap = '';
+    let overlapStripHtml = overlapPaginationIdleHtml();
     if (overlaps.length > 0) {
         overlapPage = 1;
         overlapTab = 'all';
         const overlapLevels = [...new Set(overlaps.map(o => o.conflictLevel))];
-        const tabLabels = { all: 'Все', high: 'Высокий риск', medium: 'Средний', low: 'Низкий' };
+        const tabLabels = { all: 'Все', high: 'Высокий', medium: 'Средний', low: 'Низ' };
         const tabOrder = ['all', 'high', 'medium', 'low'];
         const tabsToShow = ['all', ...tabOrder.filter(t => t !== 'all' && overlapLevels.includes(t))];
         let tabsHtml = '<div class="overlap-tabs">';
@@ -1260,59 +1302,64 @@ function displayResults(results, options = {}) {
             tabsHtml += `<button type="button" class="overlap-tab${active}" data-overlap-tab="${t}" aria-pressed="${t === 'all'}">${label}</button>`;
         });
         tabsHtml += '</div>';
-        html += `
-            <div class="overlap-section">
-                <h3 class="overlap-title">🔗 Анализ пересечений</h3>
-                <p class="overlap-hint">Клик по карточке — выделение на графике и подробности</p>
+        let htmlOverlapScroll = `
+            <div class="overlap-section overlap-section-panel">
+                <p class="overlap-hint">Клик по карточке — выделение на графике</p>
                 ${tabsHtml}
+                <div class="overlap-grid-scroll">
                 <div class="overlap-grid">
         `;
-        
+
         overlaps.forEach((o, idx) => {
-            const pageNum = Math.floor(idx / RESULTS_PER_PAGE) + 1;
-            html += `
-                <div class="overlap-card overlap-${o.conflictLevel}" data-overlap-index="${idx}" data-overlap-page="${pageNum}" data-conflict-level="${o.conflictLevel}" role="button" tabindex="0" style="display: none;">
-                    <div class="overlap-header">
-                        <span class="overlap-num" aria-label="Номер пересечения">№ ${idx + 1}</span>
-                        <span class="overlap-pairs">
-                            Пара #${getPairNumber(o.pair1_id)} ↔ Пара #${getPairNumber(o.pair2_id)}
-                        </span>
-                        <span class="overlap-badge">${o.overlapLength} п.н.</span>
+            const pageNum = Math.floor(idx / OVERLAP_PER_PAGE) + 1;
+            const charsHtml = buildOverlapCharsInnerHtml(o, idx, results);
+            htmlOverlapScroll += `
+                <div class="overlap-item-wrap" data-overlap-index="${idx}" data-overlap-page="${pageNum}" style="display: none;">
+                    <div class="overlap-card overlap-${o.conflictLevel}" data-overlap-index="${idx}" data-conflict-level="${o.conflictLevel}" role="button" tabindex="0">
+                        <div class="overlap-header">
+                            <span class="overlap-num" aria-label="Номер пересечения">№ ${idx + 1}</span>
+                            <span class="overlap-pairs">
+                                Пара #${getPairNumber(o.pair1_id)} ↔ Пара #${getPairNumber(o.pair2_id)}
+                            </span>
+                            <span class="overlap-badge">${o.overlapLength} п.н.</span>
+                        </div>
+                        <div class="overlap-details">
+                            <div>${formatOverlapType(o.type)}</div>
+                            ${(Array.isArray(o.warning) ? o.warning : (o.warning ? [o.warning] : [])).map(w => `<div class="overlap-warning">${w}</div>`).join('')}
+                        </div>
                     </div>
-                    <div class="overlap-details">
-                        <div>${formatOverlapType(o.type)}</div>
-                        ${(Array.isArray(o.warning) ? o.warning : (o.warning ? [o.warning] : [])).map(w => `<div class="overlap-warning">${w}</div>`).join('')}
-                    </div>
+                    <button type="button" class="overlap-chars-toggle" aria-expanded="false">Показать характеристики</button>
+                    <div class="overlap-chars-panel" style="display: none;" aria-hidden="true">${charsHtml}</div>
                 </div>
             `;
         });
-        
-        html += `
-                </div>`;
-        const overlapTotalPages = Math.max(1, Math.ceil(overlaps.length / RESULTS_PER_PAGE));
-        html += `
+
+        htmlOverlapScroll += `
+                </div>
+                </div>
+            </div>`;
+        htmlOverlap = htmlOverlapScroll;
+        const overlapTotalPages = Math.max(1, Math.ceil(overlaps.length / OVERLAP_PER_PAGE));
+        overlapStripHtml = `
                 <div class="pagination-bar overlap-pagination">
                     <button type="button" class="pagination-btn overlap-pagination-prev" aria-label="Предыдущая страница">← Назад</button>
                     <span class="pagination-info" id="overlap-pagination-info">Страница 1 из ${overlapTotalPages}</span>
                     <button type="button" class="pagination-btn overlap-pagination-next" aria-label="Следующая страница">Вперёд →</button>
-                </div>
-                <div class="overlap-detail" id="overlap-detail" style="display: none;" aria-live="polite"></div>
-            </div>`;
+                </div>`;
     }
 
-    // Карточки с праймерами (все; пагинация по 10 на страницу)
-    const totalPages = Math.max(1, Math.ceil(results.length / RESULTS_PER_PAGE));
+    const totalPages = Math.max(1, Math.ceil(results.length / PRIMER_RESULTS_PER_PAGE));
     resultsPage = 1;
 
     results.forEach((pair, idx) => {
-        const pageNum = Math.floor(idx / RESULTS_PER_PAGE) + 1;
+        const pageNum = Math.floor(idx / PRIMER_RESULTS_PER_PAGE) + 1;
         const medal = idx === 0 ? '🥇' : idx === 1 ? '🥈' : idx === 2 ? '🥉' : '📌';
         const gradeColor = pair.grade?.color ?? '#94a3b8';
         const gradeLetter = pair.grade?.letter ?? '—';
         const scoreDisplay = pair.totalScore != null && Number.isFinite(pair.totalScore) ? pair.totalScore : '—';
         const sameForwardAsPrev = idx > 0 && (results[idx - 1].forward?.sequence === pair.forward?.sequence);
 
-        html += `
+        htmlPrimers += `
             <div class="result-card" data-pair-id="${pair.id}" data-pair-index="${idx}" data-page="${pageNum}" style="display: none;">
                 ${sameForwardAsPrev ? '<div class="same-forward-indicator">↕️ Тот же forward, другой reverse</div>' : ''}
                 <div class="card-header">
@@ -1352,14 +1399,14 @@ function displayResults(results, options = {}) {
         `;
 
         if (pair.warnings && pair.warnings.length > 0) {
-            html += '<div class="warnings">';
+            htmlPrimers += '<div class="warnings">';
             pair.warnings.slice(0, 2).forEach(w => {
-                html += `<div class="warning">⚠️ ${w}</div>`;
+                htmlPrimers += `<div class="warning">⚠️ ${w}</div>`;
             });
-            html += '</div>';
+            htmlPrimers += '</div>';
         }
 
-        html += `
+        htmlPrimers += `
                 <div class="card-actions">
                     <button class="action-btn copy-btn" data-seq="${pair.forward.sequence}" data-type="forward">
                         📋 Fwd
@@ -1378,19 +1425,24 @@ function displayResults(results, options = {}) {
         `;
     });
 
-    // Пагинация карточек праймеров — показываем всегда (при 1 странице кнопки отключены)
-    html += `
+    htmlPrimers += `
         <div class="pagination-bar pagination-results">
             <button type="button" class="pagination-btn pagination-prev" aria-label="Предыдущая страница">← Назад</button>
             <span class="pagination-info" id="pagination-info">Страница 1 из ${totalPages}</span>
             <button type="button" class="pagination-btn pagination-next" aria-label="Следующая страница">Вперёд →</button>
         </div>`;
 
-    container.innerHTML = html;
+    if (primersEl) primersEl.innerHTML = htmlPrimers;
+    if (overlapEl) {
+        overlapEl.innerHTML = htmlOverlap || '<p class="overlap-empty-msg">Пересечений не обнаружено.</p>';
+    }
+    const overlapStrip = document.getElementById('overlap-pagination-strip');
+    if (overlapStrip) overlapStrip.innerHTML = overlapStripHtml;
+    setPanelRightAnalysisVisible(true);
 
     // Показать первую страницу карточек и повесить пагинацию
     const showPage = (page) => {
-        const totalP = Math.max(1, Math.ceil(results.length / RESULTS_PER_PAGE));
+        const totalP = Math.max(1, Math.ceil(results.length / PRIMER_RESULTS_PER_PAGE));
         document.querySelectorAll('.result-card').forEach(card => {
             card.style.display = parseInt(card.dataset.page, 10) === page ? '' : 'none';
         });
@@ -1409,13 +1461,12 @@ function displayResults(results, options = {}) {
         showPage(resultsPage);
     });
     document.querySelector('.pagination-next')?.addEventListener('click', () => {
-        const totalP = Math.max(1, Math.ceil(results.length / RESULTS_PER_PAGE));
+        const totalP = Math.max(1, Math.ceil(results.length / PRIMER_RESULTS_PER_PAGE));
         if (resultsPage >= totalP) return;
         resultsPage++;
         showPage(resultsPage);
     });
 
-    // Вкладки и пагинация карточек пересечений
     if (overlaps.length > 0) {
         const getIndicesForTab = (tab) => {
             if (tab === 'all') return overlaps.map((_, i) => i);
@@ -1423,12 +1474,23 @@ function displayResults(results, options = {}) {
         };
         const showOverlapPage = (tab, page) => {
             const indices = getIndicesForTab(tab);
-            const totalP = Math.max(1, Math.ceil(indices.length / RESULTS_PER_PAGE));
-            const pageIndices = indices.slice((page - 1) * RESULTS_PER_PAGE, page * RESULTS_PER_PAGE);
+            const totalP = Math.max(1, Math.ceil(indices.length / OVERLAP_PER_PAGE));
+            const pageIndices = indices.slice((page - 1) * OVERLAP_PER_PAGE, page * OVERLAP_PER_PAGE);
             const set = new Set(pageIndices);
-            document.querySelectorAll('.overlap-card').forEach(card => {
-                const idx = parseInt(card.dataset.overlapIndex, 10);
-                card.style.display = set.has(idx) ? '' : 'none';
+            document.querySelectorAll('.overlap-item-wrap').forEach(wrap => {
+                const idx = parseInt(wrap.dataset.overlapIndex, 10);
+                const show = set.has(idx);
+                wrap.style.display = show ? '' : 'none';
+                if (!show) {
+                    const panel = wrap.querySelector('.overlap-chars-panel');
+                    const toggle = wrap.querySelector('.overlap-chars-toggle');
+                    if (panel && toggle) {
+                        panel.style.display = 'none';
+                        panel.setAttribute('aria-hidden', 'true');
+                        toggle.textContent = 'Показать характеристики';
+                        toggle.setAttribute('aria-expanded', 'false');
+                    }
+                }
             });
             const infoEl = document.getElementById('overlap-pagination-info');
             if (infoEl) infoEl.textContent = `Страница ${page} из ${totalP}`;
@@ -1457,7 +1519,7 @@ function displayResults(results, options = {}) {
         });
         document.querySelector('.overlap-pagination-next')?.addEventListener('click', () => {
             const indices = getIndicesForTab(overlapTab);
-            const totalP = Math.max(1, Math.ceil(indices.length / RESULTS_PER_PAGE));
+            const totalP = Math.max(1, Math.ceil(indices.length / OVERLAP_PER_PAGE));
             if (overlapPage >= totalP) return;
             overlapPage++;
             showOverlapPage(overlapTab, overlapPage);
@@ -1511,35 +1573,42 @@ function displayResults(results, options = {}) {
     // Клик по карточке пересечения: выделение на графике + тултип с характеристиками
     if (overlaps.length > 0 && visualizer && currentSequence) {
         const seq = currentSequence.replace(/\s/g, '');
-        const detailEl = document.getElementById('overlap-detail');
         const renderHighlight = (highlightIndex) => {
             const pairIdx = document.querySelector('.result-card.result-card-highlighted')?.dataset.pairIndex;
             const parsed = pairIdx != null ? parseInt(pairIdx, 10) : -1;
             renderVisualization(parsed >= 0 ? parsed : -1, highlightIndex);
         };
-        const showOverlapDetail = (o, overlapIndex = 0) => {
-            const warnings = Array.isArray(o.warning) ? o.warning : (o.warning ? [o.warning] : []);
-            const conflictLabels = { low: 'Низкий', medium: 'Средний', high: 'Высокий' };
-            const num = (overlapIndex != null ? overlapIndex : 0) + 1;
-            let html = `
-                <div class="overlap-detail-inner">
-                    <h4>Характеристики пересечения № ${num}</h4>
-                    <ul class="overlap-detail-list">
-                        <li><strong>Пары:</strong> #${getPairNumber(o.pair1_id)} ↔ #${getPairNumber(o.pair2_id)}</li>
-                        <li><strong>Тип:</strong> ${formatOverlapType(o.type)}</li>
-                        <li><strong>Позиция:</strong> ${o.overlapStart}–${o.overlapEnd} (${o.overlapLength} п.н.)</li>
-                        <li><strong>Уровень конфликта:</strong> ${conflictLabels[o.conflictLevel] || o.conflictLevel}</li>
-                        ${o.percentOfFirst != null ? `<li><strong>% от 1-го праймера:</strong> ${o.percentOfFirst}%</li>` : ''}
-                        ${o.percentOfSecond != null ? `<li><strong>% от 2-го праймера:</strong> ${o.percentOfSecond}%</li>` : ''}
-                        ${(o.complementaryRisk?.hasComplementarity) ? `<li class="warning">Комплементарность в перекрытии: ${o.complementaryRisk.matchPercent}%</li>` : ''}
-                    </ul>
-                    ${warnings.length ? `<div class="overlap-detail-warnings">${warnings.map(w => `<div class="overlap-warning">${w}</div>`).join('')}</div>` : ''}
-                </div>`;
-            if (detailEl) {
-                detailEl.innerHTML = html;
-                detailEl.style.display = 'block';
-            }
-        };
+        document.querySelectorAll('.overlap-chars-toggle').forEach(toggle => {
+            toggle.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const wrap = toggle.closest('.overlap-item-wrap');
+                const panel = wrap?.querySelector('.overlap-chars-panel');
+                if (!panel) return;
+                const opening = panel.style.display === 'none' || !panel.style.display;
+                document.querySelectorAll('.overlap-item-wrap').forEach(w => {
+                    if (w.style.display === 'none') return;
+                    const p = w.querySelector('.overlap-chars-panel');
+                    const t = w.querySelector('.overlap-chars-toggle');
+                    if (p && t && w !== wrap) {
+                        p.style.display = 'none';
+                        p.setAttribute('aria-hidden', 'true');
+                        t.textContent = 'Показать характеристики';
+                        t.setAttribute('aria-expanded', 'false');
+                    }
+                });
+                if (opening) {
+                    panel.style.display = 'block';
+                    panel.setAttribute('aria-hidden', 'false');
+                    toggle.textContent = 'Скрыть характеристики';
+                    toggle.setAttribute('aria-expanded', 'true');
+                } else {
+                    panel.style.display = 'none';
+                    panel.setAttribute('aria-hidden', 'true');
+                    toggle.textContent = 'Показать характеристики';
+                    toggle.setAttribute('aria-expanded', 'false');
+                }
+            });
+        });
         document.querySelectorAll('.overlap-card').forEach(card => {
             card.addEventListener('click', () => {
                 const idx = parseInt(card.dataset.overlapIndex, 10);
@@ -1547,7 +1616,6 @@ function displayResults(results, options = {}) {
                 document.querySelectorAll('.overlap-card').forEach(c => c.classList.remove('highlighted'));
                 card.classList.add('highlighted');
                 renderHighlight(idx);
-                showOverlapDetail(overlaps[idx], idx);
                 const vizEl = document.getElementById('visualization');
                 if (vizEl) {
                     vizEl.classList.add('visualization-overlap-highlighted');
@@ -1718,8 +1786,8 @@ function showProgress(show) {
 }
 
 function showError(message) {
-    const results = document.getElementById('results');
-    results.innerHTML = `<div class="error">❌ ${message}</div>`;
+    const el = document.getElementById('results-primers');
+    if (el) el.innerHTML = `<div class="error">❌ ${message}</div>`;
 }
 
 function showNotification(message) {
@@ -1767,9 +1835,125 @@ function formatOverlapType(type) {
     return types[type] || type;
 }
 
+/** Карточка пары для панели пересечения (как в списке результатов, компактно). */
+function buildOverlapEmbeddedPairHtml(pair, idx) {
+    if (!pair?.forward || !pair?.reverse) {
+        return '<div class="overlap-embed-pair overlap-embed-missing">Пара не найдена в текущих результатах.</div>';
+    }
+    const medal = idx === 0 ? '🥇' : idx === 1 ? '🥈' : idx === 2 ? '🥉' : '📌';
+    const gradeColor = pair.grade?.color ?? '#94a3b8';
+    const gradeLetter = pair.grade?.letter ?? '—';
+    const scoreDisplay = pair.totalScore != null && Number.isFinite(pair.totalScore) ? pair.totalScore : '—';
+    const pf = pair.forward;
+    const pr = pair.reverse;
+    let warnBlock = '';
+    if (pair.warnings && pair.warnings.length > 0) {
+        warnBlock = '<div class="warnings">';
+        pair.warnings.slice(0, 2).forEach((w) => {
+            warnBlock += `<div class="warning">⚠️ ${String(w).replace(/</g, '&lt;')}</div>`;
+        });
+        warnBlock += '</div>';
+    }
+    const pairJson = JSON.stringify(pair);
+    return `
+                <div class="overlap-embed-pair">
+                    <div class="card-header">
+                        <div class="rank">${medal} Пара #${idx + 1}</div>
+                        <div class="grade" style="background: ${gradeColor}20; color: ${gradeColor}">${gradeLetter} (${scoreDisplay})</div>
+                    </div>
+                    <div class="primers">
+                        <div class="primer forward">
+                            <div class="primer-label">
+                                <span>5' → 3'</span>
+                                <span class="primer-pos">${pf.start}-${pf.end}</span>
+                            </div>
+                            <div class="primer-sequence">${formatSequence(pf.sequence)}</div>
+                            <div class="primer-stats">
+                                <span>Tm: ${pf.details?.tm?.value?.toFixed(1) || 'N/A'}°C</span>
+                                <span>GC: ${pf.details?.gc?.value?.toFixed(1) || 'N/A'}%</span>
+                            </div>
+                        </div>
+                        <div class="primer reverse">
+                            <div class="primer-label">
+                                <span>3' ← 5'</span>
+                                <span class="primer-pos">${pr.start}-${pr.end}</span>
+                            </div>
+                            <div class="primer-sequence">${formatSequence(pr.sequence)}</div>
+                            <div class="primer-stats">
+                                <span>Tm: ${pr.details?.tm?.value?.toFixed(1) || 'N/A'}°C</span>
+                                <span>GC: ${pr.details?.gc?.value?.toFixed(1) || 'N/A'}%</span>
+                            </div>
+                        </div>
+                    </div>
+                    ${warnBlock}
+                    <div class="card-actions">
+                        <button type="button" class="action-btn copy-btn" data-seq="${pf.sequence}" data-type="forward">📋 Fwd</button>
+                        <button type="button" class="action-btn copy-btn" data-seq="${pr.sequence}" data-type="reverse">📋 Rev</button>
+                        <button type="button" class="action-btn save-btn" data-pair='${pairJson}'>
+                            💾 Сохранить
+                        </button>
+                        <button type="button" class="action-btn feedback-btn" data-pair='${pairJson}'>
+                            📝 Отзыв
+                        </button>
+                    </div>
+                </div>`;
+}
+
+/** Полный блок «Характеристики пересечения» + справа карточки обеих пар. */
+function buildOverlapCharsInnerHtml(o, overlapIndex, results) {
+    const warnings = Array.isArray(o.warning) ? o.warning : (o.warning ? [o.warning] : []);
+    const conflictLabels = { low: 'Низкий', medium: 'Средний', high: 'Высокий' };
+    const num = overlapIndex + 1;
+    const res = Array.isArray(results) ? results : [];
+    const i1 = res.findIndex((p) => p.id === o.pair1_id);
+    const i2 = res.findIndex((p) => p.id === o.pair2_id);
+    const p1 = i1 >= 0 ? res[i1] : null;
+    const p2 = i2 >= 0 ? res[i2] : null;
+    const embed1 = buildOverlapEmbeddedPairHtml(p1, i1 >= 0 ? i1 : 0);
+    const embed2 = buildOverlapEmbeddedPairHtml(p2, i2 >= 0 ? i2 : 0);
+    const detailCol = `
+                    <div class="overlap-chars-col-detail">
+                        <div class="overlap-detail-inner">
+                            <h4>Характеристики пересечения № ${num}</h4>
+                            <ul class="overlap-detail-list">
+                                <li><strong>Пары:</strong> #${getPairNumber(o.pair1_id)} ↔ #${getPairNumber(o.pair2_id)}</li>
+                                <li><strong>Тип:</strong> ${formatOverlapType(o.type)}</li>
+                                <li><strong>Позиция:</strong> ${o.overlapStart}–${o.overlapEnd} (${o.overlapLength} п.н.)</li>
+                                <li><strong>Уровень конфликта:</strong> ${conflictLabels[o.conflictLevel] || o.conflictLevel}</li>
+                                ${o.percentOfFirst != null ? `<li><strong>% от 1-го праймера:</strong> ${o.percentOfFirst}%</li>` : ''}
+                                ${o.percentOfSecond != null ? `<li><strong>% от 2-го праймера:</strong> ${o.percentOfSecond}%</li>` : ''}
+                                ${(o.complementaryRisk?.hasComplementarity) ? `<li class="warning">Комплементарность в перекрытии: ${o.complementaryRisk.matchPercent}%</li>` : ''}
+                            </ul>
+                        </div>
+                    </div>`;
+    const pairsBlock = `
+                    <div class="overlap-chars-pairs-block" aria-label="Пары в пересечении">
+                        <div class="overlap-embed-pair-label">Участвующие пары</div>
+                        <div class="overlap-chars-pairs-flex">
+                            ${embed1}
+                            ${embed2}
+                        </div>
+                    </div>`;
+    const warnFull = warnings.length
+        ? `<div class="overlap-detail-warnings overlap-chars-warnings-full">${warnings.map((w) => `<div class="overlap-warning">${w}</div>`).join('')}</div>`
+        : '';
+    return `
+                <div class="overlap-chars-layout">
+                    ${detailCol}
+                    ${pairsBlock}
+                </div>
+                ${warnFull}`;
+}
+
 async function clearForm() {
     document.getElementById('sequence').value = '';
-    document.getElementById('results').innerHTML = '';
+    const rp = document.getElementById('results-primers');
+    if (rp) rp.innerHTML = '';
+    const od = document.getElementById('overlap-dynamic');
+    if (od) od.innerHTML = '';
+    const os = document.getElementById('overlap-pagination-strip');
+    if (os) os.innerHTML = overlapPaginationIdleHtml();
+    setPanelRightAnalysisVisible(false);
     const connectionWarning = document.getElementById('connection-warning');
     if (connectionWarning) connectionWarning.style.display = 'none';
     updateSequenceStats('');
@@ -1887,7 +2071,14 @@ window.deleteSavedPrimer = async function (id) {
 // Добавляем стили для секции пересечений
 const overlapStyles = document.createElement('style');
 overlapStyles.textContent = `
-    .overlap-section {
+    .overlap-section.overlap-section-panel {
+        margin: 0;
+        padding: 0;
+        background: transparent;
+        border: none;
+        border-radius: 0;
+    }
+    .overlap-section:not(.overlap-section-panel) {
         margin: 16px 0;
         padding: 16px;
         background: #f8fafc;
@@ -1907,7 +2098,7 @@ overlapStyles.textContent = `
     
     .overlap-grid {
         display: grid;
-        gap: 8px;
+        gap: 10px;
     }
     
     .overlap-card {

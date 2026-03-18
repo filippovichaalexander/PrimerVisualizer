@@ -5,11 +5,40 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <link rel="stylesheet" href="popup.css">
     <style>
+        html, body {
+            margin: 0;
+            height: 100%;
+            max-height: 100vh;
+            overflow: hidden;
+            box-sizing: border-box;
+        }
         .overlap-card { cursor: pointer; transition: box-shadow 0.2s, border-color 0.2s; }
         .overlap-card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
         .overlap-card.highlighted { box-shadow: 0 0 0 2px var(--color-primary, #3b82f6); border-color: var(--color-primary, #3b82f6); }
         .overlap-hint { font-size: 11px; color: #64748b; margin: 4px 0 8px; }
-        .overlap-detail { margin-top: 10px; padding: 10px; background: #f8fafc; border-radius: 8px; border: 1px solid #e2e8f0; }
+        .overlap-item-wrap { display: flex; flex-direction: column; gap: 4px; }
+        .overlap-chars-toggle { width: 100%; box-sizing: border-box; text-align: left; padding: 6px 8px; font-size: 11px; border: 1px solid #e2e8f0; border-radius: 6px; background: #f8fafc; color: #475569; cursor: pointer; margin: 0; }
+        .overlap-chars-toggle:hover { background: #f1f5f9; color: #334155; }
+        .overlap-chars-panel { margin-top: 2px; padding: 10px; background: #f8fafc; border-radius: 8px; border: 1px solid #e2e8f0; max-width: 100%; box-sizing: border-box; overflow-x: auto; }
+        .overlap-chars-layout { display: flex; flex-direction: column; gap: 12px; align-items: stretch; }
+        .overlap-chars-col-detail { width: 100%; min-width: 0; }
+        .overlap-chars-pairs-block { width: 100%; min-width: 0; }
+        .overlap-chars-pairs-flex { display: flex; flex-direction: row; flex-wrap: wrap; gap: 10px; align-items: stretch; }
+        .overlap-chars-pairs-flex > .overlap-embed-pair { flex: 1 1 200px; min-width: 160px; max-width: 100%; }
+        .overlap-embed-pair-label { font-size: 11px; font-weight: 600; color: #64748b; margin-bottom: 6px; }
+        .overlap-embed-pair { border: 1px solid #e2e8f0; border-radius: 8px; padding: 8px 10px; background: #fff; font-size: 11px; box-sizing: border-box; }
+        .overlap-embed-pair .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; gap: 8px; flex-wrap: wrap; }
+        .overlap-embed-pair .rank { font-weight: 700; font-size: 12px; color: #1e293b; }
+        .overlap-embed-pair .grade { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 6px; }
+        .overlap-embed-pair .primers { display: flex; flex-direction: column; gap: 8px; }
+        .overlap-embed-pair .primer { padding: 6px 8px; background: #f8fafc; border-radius: 6px; border: 1px solid #e2e8f0; }
+        .overlap-embed-pair .primer-label { display: flex; justify-content: space-between; font-size: 10px; color: #64748b; margin-bottom: 4px; }
+        .overlap-embed-pair .primer-sequence { font-family: ui-monospace, monospace; font-size: 11px; word-break: break-all; color: #1e293b; }
+        .overlap-embed-pair .primer-stats { display: flex; gap: 10px; font-size: 10px; color: #64748b; margin-top: 4px; }
+        .overlap-embed-pair .card-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+        .overlap-embed-pair .action-btn { font-size: 10px; padding: 4px 8px; }
+        .overlap-embed-missing { color: #94a3b8; font-size: 12px; padding: 12px; text-align: center; background: #f1f5f9; border-radius: 6px; }
+        .overlap-chars-warnings-full { margin-top: 10px; width: 100%; }
         .overlap-detail-inner h4 { margin: 0 0 8px; font-size: 13px; }
         .overlap-detail-list { margin: 0; padding-left: 18px; font-size: 12px; line-height: 1.5; }
         .overlap-detail-warnings { margin-top: 8px; }
@@ -22,38 +51,552 @@
         .pagination-btn:hover:not(:disabled) { background: #f1f5f9; }
         .pagination-btn:disabled { opacity: 0.5; cursor: not-allowed; }
         .pagination-info { font-size: 12px; color: #64748b; }
-        .design-main-layout { display: flex; gap: 16px; margin-top: 16px; align-items: flex-start; flex-wrap: wrap; }
-        .design-sidebar { flex: 0 0 300px; min-width: 260px; max-width: 100%; }
-        .design-sidebar .advanced-settings-details { margin: 0; }
-        .design-main-layout .results { flex: 1; min-width: 280px; }
+        .app-root {
+            max-width: 100%;
+            min-width: 920px;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            max-height: 100vh;
+            box-sizing: border-box;
+        }
+        .app-shell {
+            flex: 1;
+            min-height: 0;
+            display: flex;
+            align-items: stretch;
+        }
+        .layout-sidebar {
+            flex: 0 0 30%; min-width: 240px; max-width: 380px; height: 100%;
+            border-right: 1px solid #e2e8f0; background: #f8fafc;
+            display: flex; flex-direction: column; overflow: hidden;
+        }
+        .sidebar-nav { display: flex; flex-direction: column; padding: 10px 8px; gap: 4px; border-bottom: 1px solid #e2e8f0; background: #fff; }
+        .sidebar-nav .tab { text-align: left; padding: 10px 14px; border: none; border-radius: 8px; background: transparent; cursor: pointer; font-size: 14px; color: #475569; }
+        .sidebar-nav .tab:hover { background: #f1f5f9; }
+        .sidebar-nav .tab.active { background: #dbeafe; color: #1d4ed8; font-weight: 600; }
+        .sidebar-design-blocks { padding: 10px; flex: 1; min-height: 0; overflow-y: auto; }
+        .sidebar-kv-block { margin-bottom: 12px; padding: 10px; background: #fff; border-radius: 8px; border: 1px solid #e2e8f0; }
+        .sidebar-block-title { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: #64748b; margin-bottom: 10px; }
+        .sidebar-kv { display: flex; flex-direction: column; gap: 2px; margin-bottom: 8px; font-size: 12px; }
+        .sidebar-kv-label { color: #64748b; }
+        .sidebar-kv-val { color: #1e293b; font-size: 13px; }
+        .layout-sidebar .advanced-settings-details { margin: 12px 0 0; border: 1px solid #e2e8f0; border-radius: 8px; background: #fff; }
+        .status-row-sidebar { flex-wrap: wrap; gap: 6px; margin-bottom: 8px; font-size: 13px; }
+        .layout-main { flex: 1; min-width: 0; min-height: 0; overflow: hidden; padding: 10px 14px; display: flex; flex-direction: column; }
+        .tab-pane { display: none; }
+        .tab-pane.active { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: hidden; }
+        #tab-design.tab-pane.active { overflow: hidden; }
+        .tab-pane.active:not(#tab-design) { overflow-y: auto; }
+        .design-workspace {
+            flex: 1; min-height: 0; display: flex; gap: 14px; align-items: stretch;
+            margin-top: 2px; height: 100%;
+        }
+        .panel-center {
+            flex: 0 0 40%; min-width: 280px; max-width: 520px; height: 100%;
+            display: flex; flex-direction: column; min-height: 0; overflow: hidden;
+            border: 1px solid #e2e8f0; border-radius: 10px; background: #fff; padding: 10px;
+            box-sizing: border-box;
+        }
+        .panel-center-body {
+            flex: 1;
+            min-height: 0;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            padding-right: 4px;
+        }
+        .panel-center-form {
+            flex: 1;
+            min-height: 0;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        .panel-center-sequence-block {
+            flex: 2 1 0;
+            min-height: 0;
+            display: flex;
+            flex-direction: column;
+        }
+        .panel-center-sequence-block label {
+            flex-shrink: 0;
+        }
+        .panel-center textarea#sequence {
+            flex: 1;
+            min-height: 100px;
+            width: 100%;
+            box-sizing: border-box;
+            resize: vertical;
+        }
+        .panel-center .results-primers {
+            flex: 1 1 0;
+            min-height: 0;
+            overflow-y: auto;
+            margin-top: 10px;
+            padding-top: 10px;
+            border-top: 1px solid #e2e8f0;
+            -webkit-overflow-scrolling: touch;
+        }
+        .panel-center-form > .quick-insert,
+        .panel-center-form > .param-stat-grid,
+        .panel-center-form > .actions,
+        .panel-center-form > .progress,
+        .panel-center-form > .connection-warning {
+            flex-shrink: 0;
+        }
+        .panel-right {
+            flex: 1; min-width: 260px; min-height: 0; height: 100%;
+            border-left: 1px solid #e2e8f0; padding-left: 14px;
+            display: flex; flex-direction: column; overflow: hidden;
+            box-sizing: border-box;
+        }
+        .panel-right-inner {
+            flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden;
+        }
+        .panel-right-invite {
+            flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center;
+            padding: 20px 16px; text-align: center;
+        }
+        .panel-right-invite-text {
+            margin: 0; font-size: 14px; line-height: 1.5; color: #64748b; max-width: 220px;
+        }
+        .panel-right-analysis {
+            flex: 1; min-height: 0; flex-direction: column; overflow: hidden;
+            border: 1px solid #cbd5e1;
+            border-radius: 10px;
+            background: #fff;
+            box-sizing: border-box;
+        }
+        .panel-right-head {
+            flex-shrink: 0;
+            padding: 12px 12px 10px;
+            border-top: 2px solid #475569;
+            border-radius: 9px 9px 0 0;
+            background: #f8fafc;
+            box-sizing: border-box;
+        }
+        .panel-right-overlap-stack {
+            flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden;
+            margin-top: 0;
+            border: none;
+            border-top: 1px solid #e2e8f0;
+            border-radius: 0 0 9px 9px;
+            background: #fafafa;
+        }
+        .overlap-dynamic {
+            flex: 1; min-height: 0; overflow: hidden;
+            display: flex; flex-direction: column;
+        }
+        .overlap-pagination-strip {
+            flex-shrink: 0; min-height: 48px; max-height: 48px;
+            display: flex; align-items: center; justify-content: center;
+            border-top: 1px solid #e2e8f0; background: #fff;
+            padding: 0 8px; box-sizing: border-box;
+        }
+        .overlap-pagination-strip .pagination-bar { margin: 0; padding: 4px 0; }
+        .overlap-pagination-idle .pagination-btn { opacity: 0.35; pointer-events: none; }
+        .overlap-section-panel { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; margin: 0; padding: 8px; box-sizing: border-box; }
+        .overlap-grid-scroll { flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+        .panel-center .pagination-results { flex-shrink: 0; margin-top: 8px; padding-top: 8px; border-top: 1px solid #e2e8f0; }
+        .panel-right-title { font-size: 14px; font-weight: 700; color: #1e293b; margin-bottom: 8px; }
+        .viz-chart-label { font-size: 12px; font-weight: 600; color: #64748b; margin: 8px 0 4px; }
+        .viz-in-panel { max-height: 180px; border: 1px solid #e2e8f0; border-radius: 8px; background: #fff; }
+        .param-stat-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 12px 0 16px; }
+        .param-stat-card-wide { grid-column: 1 / -1; max-width: 200px; justify-self: center; }
+        .param-stat-card { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 12px 8px; border: 1px solid #e2e8f0; border-radius: 10px; background: #fff; text-align: center; min-height: 72px; }
+        .param-stat-readonly { background: linear-gradient(180deg, #f8fafc 0%, #fff 100%); }
+        .param-stat-num { font-size: 22px; font-weight: 700; color: #1e293b; line-height: 1.1; }
+        .param-stat-label { font-size: 11px; color: #64748b; margin-top: 4px; text-transform: uppercase; letter-spacing: 0.02em; }
+        .param-stat-input, .param-stat-select { margin-top: 6px; width: 100%; max-width: 72px; text-align: center; padding: 6px; border: 1px solid #e2e8f0; border-radius: 6px; font-size: 16px; font-weight: 600; }
+        .param-stat-select { max-width: 88px; }
+        .panel-center .quick-insert { margin-bottom: 12px; }
+        .panel-center textarea#sequence { font-family: ui-monospace, monospace; font-size: 13px; border: 2px solid #cbd5e1; border-radius: 8px; }
+        .results-primers { margin-top: 0; }
+        .results-primers-inner { min-height: 0; }
+        .overlap-empty-msg { font-size: 12px; color: #94a3b8; margin: 8px 0; }
+        .overlap-section-panel { margin-top: 0; }
+        .app-header {
+            flex-shrink: 0;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 16px;
+            padding: 10px 18px;
+            border-bottom: 1px solid #e2e8f0;
+            background: #fff;
+        }
+        .app-header-brand {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 18px;
+            font-weight: 700;
+            color: #1e293b;
+        }
+        .app-header-brand .logo-icon { font-size: 24px; }
+        .app-header-status {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-end;
+            gap: 6px;
+            min-width: 0;
+        }
+        .app-header-status-title {
+            font-size: 10px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            color: #64748b;
+        }
+        .app-header-status .status-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap;
+            justify-content: flex-end;
+            font-size: 13px;
+        }
+        .app-header-status .status-mode-toggle {
+            font-size: 11px;
+            padding: 6px 12px;
+            white-space: nowrap;
+        }
+        .footer {
+            flex-shrink: 0;
+            padding: 12px 16px;
+            border-top: 1px solid #e2e8f0;
+            background: #f8fafc;
+            font-size: 13px;
+            color: #64748b;
+        }
+        .footer-centered {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-wrap: wrap;
+            gap: 8px;
+            text-align: center;
+            max-width: 100%;
+        }
+        .footer .version { font-weight: 600; color: #475569; }
+        .footer-centered a { color: #3b82f6; text-decoration: none; }
+        .footer-centered a:hover { text-decoration: underline; }
+        .footer-sep { color: #94a3b8; user-select: none; }
+        .tab-pane:not(#tab-design) { padding-top: 8px; }
         .settings-hint { font-size: 13px; color: #64748b; margin: 16px 0; padding: 12px; background: #f8fafc; border-radius: 8px; border: 1px solid #e2e8f0; }
     </style>
 </head>
 <body>
-    <div class="container">
-        <div class="header">
-            <div class="logo">
+        <div class="container app-root">
+        <header class="app-header">
+            <div class="app-header-brand">
                 <span class="logo-icon">🧬</span>
                 <span class="logo-text">PrimerDesigner</span>
             </div>
-            <div class="status-block">
+            <div class="app-header-status">
+                <div class="app-header-status-title">🌐 Режим расчёта</div>
                 <div class="status-row">
                     <span class="status-indicator online" id="status-indicator" title="Сеть"></span>
                     <span class="status-text" id="status-text">Онлайн</span>
                     <span class="status-mode" id="status-mode">Сервер</span>
                 </div>
-                <button type="button" class="status-mode-toggle" id="mode-toggle" title="Переключить режим расчёта">Переключить на локально</button>
+                <button type="button" class="status-mode-toggle btn btn-small btn-outline" id="mode-toggle" title="Переключить режим расчёта">Переключить на локально</button>
             </div>
-        </div>
+        </header>
+        <div class="app-shell">
+        <aside class="layout-sidebar">
+            <nav class="sidebar-nav" role="tablist">
+                <button type="button" class="tab active" data-tab="design">Дизайн</button>
+                <button type="button" class="tab" data-tab="saved">Сохраненные</button>
+                <button type="button" class="tab" data-tab="history">История</button>
+                <button type="button" class="tab" data-tab="settings">Настройки</button>
+            </nav>
+            <div id="sidebar-design-only" class="sidebar-design-blocks">
+                <div class="sidebar-kv-block">
+                    <div class="sidebar-block-title">⚙️ Расширенные настройки</div>
+                    <div class="sidebar-kv"><span class="sidebar-kv-label">Размер ПЦР продукта</span><strong id="sidebar-kv-product" class="sidebar-kv-val">80–500 п.н.</strong></div>
+                    <div class="sidebar-kv"><span class="sidebar-kv-label">Допустимое отклонение Tm</span><strong id="sidebar-kv-tm" class="sidebar-kv-val">±3°C</strong></div>
+                    <div class="sidebar-kv"><span class="sidebar-kv-label">GC состав</span><strong id="sidebar-kv-gc" class="sidebar-kv-val">мин 35 | макс 65</strong></div>
+                </div>
 
-        <div class="tabs">
-            <button class="tab active" data-tab="design">Дизайн</button>
-            <button class="tab" data-tab="saved">Сохраненные</button>
-            <button class="tab" data-tab="history">История</button>
-            <button class="tab" data-tab="settings">Настройки</button>
-        </div>
+                <details class="advanced-settings-details" open>
+                    <summary class="advanced-settings-summary">⚙️ Расширенные настройки дизайна</summary>
 
+                    <div class="advanced-settings" id="advanced-settings-container">
+                        <div class="slider-group" data-mode="local">
+                            <label class="slider-label">
+                                Шаг поиска праймеров:
+                                <span id="step-value" class="slider-value">3</span> нуклеотидов
+                                <span class="setting-badge local-badge" title="Только в локальном режиме">💻 Локально</span>
+                            </label>
+                            <input type="range" id="step-slider" class="slider" data-setting-tooltip="stepSize"
+                                   min="1" max="10" value="3" step="1">
+                            <div class="slider-hint">
+                                <small>Меньше = точнее (медленнее), больше = быстрее (приблизительно)</small>
+                            </div>
+                        </div>
+
+                        <div class="slider-group" data-mode="local">
+                            <label class="slider-label">
+                                Мин. расстояние между праймерами:
+                                <span id="min-distance-value" class="slider-value">50</span> п.н.
+                                <span class="setting-badge local-badge" title="Только в локальном режиме">💻 Локально</span>
+                            </label>
+                            <input type="range" id="min-distance-slider" class="slider"
+                                   min="20" max="200" value="50" step="10">
+                        </div>
+
+                        <div class="range-group" data-mode="both">
+                            <label>Размер ПЦР продукта (п.н.): <span class="setting-badge server-badge" title="Отправляется на сервер">☁️ Сервер</span> <span class="setting-badge local-badge" title="Локально">💻 Локально</span></label>
+                            <div class="range-inputs">
+                                <div class="range-input-wrapper">
+                                    <span class="range-label">от</span>
+                                    <input type="number" id="min-product-size" class="range-number" data-setting-tooltip="minProductSize"
+                                           value="80" min="50" max="1000" step="10">
+                                </div>
+                                <div class="range-input-wrapper">
+                                    <span class="range-label">до</span>
+                                    <input type="number" id="max-product-size" class="range-number" data-setting-tooltip="maxProductSize"
+                                           value="500" min="100" max="2000" step="10">
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="thresholds-group" data-mode="local">
+                            <label>Пороги риска (% перекрытия): <span class="setting-badge local-badge" title="Только в локальном режиме">💻 Локально</span></label>
+                            <div class="threshold-item">
+                                <span class="threshold-label low">🟢 Низкий:</span>
+                                <span class="threshold-value" id="low-threshold-value">0-15%</span>
+                            </div>
+                            <div class="threshold-item with-slider">
+                                <span class="threshold-label medium">🟡 Средний:</span>
+                                <input type="range" id="medium-threshold-min" class="threshold-slider-min"
+                                       min="5" max="30" value="15" step="1">
+                                <span class="threshold-dash">–</span>
+                                <input type="range" id="medium-threshold-max" class="threshold-slider-max"
+                                       min="20" max="50" value="40" step="1">
+                                <span class="threshold-value" id="medium-threshold-value">15-40%</span>
+                            </div>
+                            <div class="threshold-item">
+                                <span class="threshold-label high">🔴 Высокий:</span>
+                                <span class="threshold-value" id="high-threshold-value">>40%</span>
+                                <input type="range" id="high-threshold-slider" class="threshold-slider"
+                                       min="30" max="80" value="40" step="1">
+                            </div>
+                        </div>
+
+                        <div class="tm-settings-group" data-mode="both">
+                            <label>Допустимое отклонение Tm: <span class="setting-badge server-badge" title="Отправляется на сервер">☁️ Сервер</span> <span class="setting-badge local-badge" title="Локально">💻 Локально</span></label>
+                            <div class="slider-group">
+                                <input type="range" id="tm-tolerance-slider" class="slider" data-setting-tooltip="tmTolerance"
+                                       min="1" max="10" value="3" step="0.5">
+                                <span id="tm-tolerance-value" class="slider-value">±3°C</span>
+                            </div>
+                        </div>
+
+                        <div class="gc-settings-group" data-mode="both">
+                            <label>Допустимый GC состав (%): <span class="setting-badge server-badge" title="Отправляется на сервер">☁️ Сервер</span> <span class="setting-badge local-badge" title="Локально">💻 Локально</span></label>
+                            <div class="range-inputs">
+                                <div class="range-input-wrapper">
+                                    <span class="range-label">мин</span>
+                                    <input type="number" id="min-gc" class="range-number" data-setting-tooltip="minGc"
+                                           value="35" min="20" max="50" step="1">
+                                </div>
+                                <div class="range-input-wrapper">
+                                    <span class="range-label">макс</span>
+                                    <input type="number" id="max-gc" class="range-number" data-setting-tooltip="maxGc"
+                                           value="65" min="50" max="80" step="1">
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="presets-group">
+                            <label>📋 Быстрые профили:</label>
+                            <div class="preset-buttons">
+                                <button type="button" class="preset-btn" data-preset="qpcr">qPCR</button>
+                                <button type="button" class="preset-btn" data-preset="cloning">Клонирование</button>
+                                <button type="button" class="preset-btn" data-preset="sequencing">Секвенирование</button>
+                                <button type="button" class="preset-btn" data-preset="custom">Сброс настройки</button>
+                            </div>
+                            <div class="preset-actions">
+                                <button type="button" id="save-custom-preset" class="btn btn-small btn-outline">Сохранить как мой пресет</button>
+                                <button type="button" id="export-advanced-settings" class="btn btn-small btn-outline">Экспорт</button>
+                                <button type="button" id="import-advanced-settings" class="btn btn-small btn-outline">Импорт</button>
+                            </div>
+                        </div>
+
+                        <div class="advanced-checkboxes" data-mode="local">
+                            <label class="checkbox">
+                                <input type="checkbox" id="check-hairpins" checked>
+                                <span>Проверять шпильки</span>
+                                <span class="setting-badge local-badge" title="Только в локальном режиме">💻 Локально</span>
+                            </label>
+                            <label class="checkbox">
+                                <input type="checkbox" id="check-dimers" checked>
+                                <span>Проверять димеры</span>
+                                <span class="setting-badge local-badge" title="Только в локальном режиме">💻 Локально</span>
+                            </label>
+                            <label class="checkbox">
+                                <input type="checkbox" id="check-repeats" checked>
+                                <span>Проверять повторы</span>
+                                <span class="setting-badge local-badge" title="Только в локальном режиме">💻 Локально</span>
+                            </label>
+                        </div>
+
+                        <div class="polyx-group" data-mode="local">
+                            <label class="slider-label">
+                                Макс. длина поли-X участка:
+                                <span id="polyx-value" class="slider-value">4</span> нуклеотидов
+                                <span class="setting-badge local-badge" title="Только в локальном режиме">💻 Локально</span>
+                            </label>
+                            <input type="range" id="polyx-slider" class="slider"
+                                   min="3" max="8" value="4" step="1">
+                            <div class="slider-hint">
+                                <small>Поли-A, поли-T, поли-G, поли-C (больше = риск скольжения полимеразы)</small>
+                            </div>
+                        </div>
+
+                        <div class="gradient-group" data-mode="both">
+                            <label class="slider-label">
+                                Температурный градиент:
+                                <span id="gradient-value" class="slider-value">5</span>°C
+                                <span class="setting-badge server-badge" title="Отправляется на сервер">☁️ Сервер</span>
+                                <span class="setting-badge local-badge" title="Локально">💻 Локально</span>
+                            </label>
+                            <input type="range" id="gradient-slider" class="slider" data-setting-tooltip="temperatureGradient"
+                                   min="0" max="15" value="5" step="0.5">
+                            <div class="slider-hint">
+                                <small>Разница между Tm праймера и температурой отжига (0 = оптимально)</small>
+                            </div>
+                        </div>
+
+                        <div class="salt-group" data-mode="local">
+                            <label>Концентрация солей для расчета Tm: <span class="setting-badge local-badge" title="Только в локальном режиме">💻 Локально</span></label>
+                            <div class="salt-inputs">
+                                <div class="salt-input-wrapper">
+                                    <span class="salt-label">Na⁺ (мМ):</span>
+                                    <input type="number" id="salt-na" class="salt-number"
+                                           value="50" min="0" max="500" step="10">
+                                </div>
+                                <div class="salt-input-wrapper">
+                                    <span class="salt-label">Mg²⁺ (мМ):</span>
+                                    <input type="number" id="salt-mg" class="salt-number"
+                                           value="1.5" min="0" max="10" step="0.5">
+                                </div>
+                                <div class="salt-input-wrapper">
+                                    <span class="salt-label">dNTPs (мМ):</span>
+                                    <input type="number" id="salt-dntp" class="salt-number"
+                                           value="0.2" min="0" max="2" step="0.1">
+                                </div>
+                                <div class="salt-input-wrapper">
+                                    <span class="salt-label">ДНК (нМ):</span>
+                                    <input type="number" id="salt-dna" class="salt-number"
+                                           value="50" min="0" max="500" step="10">
+                                </div>
+                                <div class="salt-input-wrapper">
+                                    <span class="salt-label">Праймер (нМ):</span>
+                                    <input type="number" id="salt-primer" class="salt-number"
+                                           value="200" min="0" max="1000" step="50">
+                                </div>
+                            </div>
+                            <div class="slider-hint">
+                                <small>Влияет на точность расчета Tm (метод ближайших соседей)</small>
+                            </div>
+                        </div>
+
+                        <div class="exclude-group" data-mode="both">
+                            <label>🚫 Исключить регионы (не выбирать праймеры): <span class="setting-badge server-badge" title="Отправляется на сервер">☁️ Сервер</span> <span class="setting-badge local-badge" title="Локально">💻 Локально</span></label>
+                            <div class="exclude-list" id="exclude-list"></div>
+                            <div class="exclude-add">
+                                <div class="exclude-inputs">
+                                    <input type="number" id="exclude-start" class="exclude-number"
+                                           placeholder="Старт" min="0" step="1">
+                                    <span class="exclude-dash">–</span>
+                                    <input type="number" id="exclude-end" class="exclude-number"
+                                           placeholder="Конец" min="0" step="1">
+                                    <button type="button" id="exclude-add-btn" class="exclude-btn">➕</button>
+                                </div>
+                                <div class="exclude-presets">
+                                    <button type="button" class="exclude-preset" data-preset="low-complexity">Низкая сложность</button>
+                                    <button type="button" class="exclude-preset" data-preset="repeats">Повторы</button>
+                                    <button type="button" class="exclude-preset" data-preset="snp">Известные SNP</button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="specificity-group" data-mode="local">
+                            <label class="checkbox">
+                                <input type="checkbox" id="check-specificity">
+                                <span>🔍 Проверять специфичность (уникальность в геноме)</span>
+                                <span class="setting-badge local-badge" title="Только в локальном режиме">💻 Локально</span>
+                            </label>
+                            <div class="specificity-options" id="specificity-options" style="display: none; margin-left: 24px; margin-top: 8px;">
+                                <div class="radio-group">
+                                    <label class="radio">
+                                        <input type="radio" name="specificity-level" value="strict" checked>
+                                        <span>Строгая (уникальные во всем геноме)</span>
+                                    </label>
+                                    <label class="radio">
+                                        <input type="radio" name="specificity-level" value="moderate">
+                                        <span>Умеренная (≤ 2 совпадений)</span>
+                                    </label>
+                                    <label class="radio">
+                                        <input type="radio" name="specificity-level" value="relaxed">
+                                        <span>Мягкая (≤ 5 совпадений)</span>
+                                    </label>
+                                </div>
+                                <select id="specificity-organism" class="specificity-select">
+                                    <option value="human">Человек (hg38)</option>
+                                    <option value="mouse">Мышь (mm39)</option>
+                                    <option value="rat">Крыса (rn7)</option>
+                                    <option value="zebrafish">Рыбка данио (GRCz11)</option>
+                                    <option value="arabidopsis">Арабидопсис (TAIR10)</option>
+                                    <option value="ecoli">E. coli (K12)</option>
+                                    <option value="custom">Загрузить свой геном...</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        <div class="settings-summary" id="settings-summary">
+                            <h4 class="settings-summary-title">📋 Сводка по настройкам</h4>
+                            <div class="summary-grid">
+                                <div class="summary-item" data-mode="both">
+                                    <span class="summary-icon">☁️</span>
+                                    <span class="summary-text">Отправляются на сервер:</span>
+                                    <span class="summary-badges">
+                                        <span class="badge">Размер продукта</span>
+                                        <span class="badge">GC состав</span>
+                                        <span class="badge">Допуск Tm</span>
+                                        <span class="badge">Градиент</span>
+                                        <span class="badge">Исключённые регионы</span>
+                                    </span>
+                                </div>
+                                <div class="summary-item" data-mode="local">
+                                    <span class="summary-icon">💻</span>
+                                    <span class="summary-text">Только локально:</span>
+                                    <span class="summary-badges">
+                                        <span class="badge local">Шаг поиска</span>
+                                        <span class="badge local">Мин. расстояние</span>
+                                        <span class="badge local">Пороги риска</span>
+                                        <span class="badge local">Поли-X</span>
+                                        <span class="badge local">Концентрация солей</span>
+                                        <span class="badge local">Шпильки/димеры</span>
+                                        <span class="badge local">Специфичность</span>
+                                    </span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </details>
+            </div>
+        </aside>
+        <main class="layout-main">
         <div class="tab-pane active" id="tab-design">
+            <div class="design-workspace">
+            <div class="panel-center">
+            <div class="panel-center-body">
+            <div class="panel-center-form">
             <div class="quick-insert" id="quick-insert">
                 <span class="quick-insert-icon">📋</span>
                 <span class="quick-insert-text">Есть последовательность с NCBI</span>
@@ -61,38 +604,37 @@
                 <button class="btn btn-small btn-primary" id="use-ncbi-and-design">Вставить и подобрать</button>
             </div>
 
-            <div class="form-group">
+            <div class="form-group panel-center-sequence-block">
                 <label for="sequence">Последовательность ДНК</label>
                 <textarea id="sequence"
                           placeholder="Вставьте последовательность (минимум 50 нуклеотидов), затем нажмите «Подобрать праймеры»..."
-                          rows="4"></textarea>
-                <div class="sequence-stats">
-                    <span id="seq-length">0</span> нуклеотидов
-                </div>
+                          rows="5"></textarea>
             </div>
-
-            <div class="params-grid">
-                <div class="form-group">
-                    <label for="tm">Tm (°C)</label>
-                    <input type="number" id="tm" value="60" min="50" max="70" step="0.5">
+            <div class="param-stat-grid">
+                <div class="param-stat-card param-stat-readonly">
+                    <div class="param-stat-num" id="seq-length">0</div>
+                    <div class="param-stat-label">нуклеотидов</div>
                 </div>
-
-                <div class="form-group">
-                    <label for="gc">GC (%)</label>
-                    <input type="number" id="gc" value="50" min="30" max="70">
-                </div>
-
-                <div class="form-group">
-                    <label for="length">Длина праймера</label>
-                    <select id="length">
+                <label class="param-stat-card">
+                    <span class="param-stat-label">Tm (°C)</span>
+                    <input type="number" id="tm" class="param-stat-input" value="60" min="50" max="70" step="0.5">
+                </label>
+                <label class="param-stat-card">
+                    <span class="param-stat-label">GC (%)</span>
+                    <input type="number" id="gc" class="param-stat-input" value="50" min="30" max="70">
+                </label>
+                <label class="param-stat-card param-stat-card-wide">
+                    <span class="param-stat-label">Длина праймера</span>
+                    <select id="length" class="param-stat-select">
                         <option value="18">18</option>
                         <option value="20">20</option>
                         <option value="22" selected>22</option>
                         <option value="24">24</option>
                         <option value="26">26</option>
                     </select>
-                </div>
+                </label>
             </div>
+
 
             <div class="actions">
                 <button class="btn btn-primary btn-block" id="design-btn">
@@ -127,289 +669,40 @@
                 <span class="connection-warning-icon">⚠️</span>
                 <span class="connection-warning-text">Сервер не ответил. Результаты получены локально (эвристика). Проверьте, что бэкенд запущен: <code>docker compose up</code>.</span>
             </div>
-
-            <div class="viz-zoom-toolbar">
-                <label class="viz-zoom-label" for="viz-zoom-slider">Масштаб</label>
-                <input type="range" id="viz-zoom-slider" class="viz-zoom-slider" min="0.5" max="10" step="0.1" value="1" title="Масштаб 50%–1000%">
-                <span id="viz-zoom-value" class="viz-zoom-value">100%</span>
             </div>
-            <div class="viz-scroll-wrapper" id="visualization-scroll">
-                <div id="visualization"></div>
             </div>
-
-            <div class="design-main-layout">
-                <aside class="design-sidebar">
-                    <details class="advanced-settings-details" open>
-                        <summary class="advanced-settings-summary">⚙️ Расширенные настройки дизайна</summary>
-
-                        <div class="advanced-settings" id="advanced-settings-container">
-                            <div class="slider-group" data-mode="local">
-                                <label class="slider-label">
-                                    Шаг поиска праймеров:
-                                    <span id="step-value" class="slider-value">3</span> нуклеотидов
-                                    <span class="setting-badge local-badge" title="Только в локальном режиме">💻 Локально</span>
-                                </label>
-                                <input type="range" id="step-slider" class="slider" data-setting-tooltip="stepSize"
-                                       min="1" max="10" value="3" step="1">
-                                <div class="slider-hint">
-                                    <small>Меньше = точнее (медленнее), больше = быстрее (приблизительно)</small>
-                                </div>
-                            </div>
-
-                            <div class="slider-group" data-mode="local">
-                                <label class="slider-label">
-                                    Мин. расстояние между праймерами:
-                                    <span id="min-distance-value" class="slider-value">50</span> п.н.
-                                    <span class="setting-badge local-badge" title="Только в локальном режиме">💻 Локально</span>
-                                </label>
-                                <input type="range" id="min-distance-slider" class="slider"
-                                       min="20" max="200" value="50" step="10">
-                            </div>
-
-                            <div class="range-group" data-mode="both">
-                                <label>Размер ПЦР продукта (п.н.): <span class="setting-badge server-badge" title="Отправляется на сервер">☁️ Сервер</span> <span class="setting-badge local-badge" title="Локально">💻 Локально</span></label>
-                                <div class="range-inputs">
-                                    <div class="range-input-wrapper">
-                                        <span class="range-label">от</span>
-                                        <input type="number" id="min-product-size" class="range-number" data-setting-tooltip="minProductSize"
-                                               value="80" min="50" max="1000" step="10">
-                                    </div>
-                                    <div class="range-input-wrapper">
-                                        <span class="range-label">до</span>
-                                        <input type="number" id="max-product-size" class="range-number" data-setting-tooltip="maxProductSize"
-                                               value="500" min="100" max="2000" step="10">
-                                    </div>
-                                </div>
-                            </div>
-
-                            <div class="thresholds-group" data-mode="local">
-                                <label>Пороги риска (% перекрытия): <span class="setting-badge local-badge" title="Только в локальном режиме">💻 Локально</span></label>
-                                <div class="threshold-item">
-                                    <span class="threshold-label low">🟢 Низкий:</span>
-                                    <span class="threshold-value" id="low-threshold-value">0-15%</span>
-                                </div>
-                                <div class="threshold-item with-slider">
-                                    <span class="threshold-label medium">🟡 Средний:</span>
-                                    <input type="range" id="medium-threshold-min" class="threshold-slider-min"
-                                           min="5" max="30" value="15" step="1">
-                                    <span class="threshold-dash">–</span>
-                                    <input type="range" id="medium-threshold-max" class="threshold-slider-max"
-                                           min="20" max="50" value="40" step="1">
-                                    <span class="threshold-value" id="medium-threshold-value">15-40%</span>
-                                </div>
-                                <div class="threshold-item">
-                                    <span class="threshold-label high">🔴 Высокий:</span>
-                                    <span class="threshold-value" id="high-threshold-value">>40%</span>
-                                    <input type="range" id="high-threshold-slider" class="threshold-slider"
-                                           min="30" max="80" value="40" step="1">
-                                </div>
-                            </div>
-
-                            <div class="tm-settings-group" data-mode="both">
-                                <label>Допустимое отклонение Tm: <span class="setting-badge server-badge" title="Отправляется на сервер">☁️ Сервер</span> <span class="setting-badge local-badge" title="Локально">💻 Локально</span></label>
-                                <div class="slider-group">
-                                    <input type="range" id="tm-tolerance-slider" class="slider" data-setting-tooltip="tmTolerance"
-                                           min="1" max="10" value="3" step="0.5">
-                                    <span id="tm-tolerance-value" class="slider-value">±3°C</span>
-                                </div>
-                            </div>
-
-                            <div class="gc-settings-group" data-mode="both">
-                                <label>Допустимый GC состав (%): <span class="setting-badge server-badge" title="Отправляется на сервер">☁️ Сервер</span> <span class="setting-badge local-badge" title="Локально">💻 Локально</span></label>
-                                <div class="range-inputs">
-                                    <div class="range-input-wrapper">
-                                        <span class="range-label">мин</span>
-                                        <input type="number" id="min-gc" class="range-number" data-setting-tooltip="minGc"
-                                               value="35" min="20" max="50" step="1">
-                                    </div>
-                                    <div class="range-input-wrapper">
-                                        <span class="range-label">макс</span>
-                                        <input type="number" id="max-gc" class="range-number" data-setting-tooltip="maxGc"
-                                               value="65" min="50" max="80" step="1">
-                                    </div>
-                                </div>
-                            </div>
-
-                            <div class="presets-group">
-                                <label>📋 Быстрые профили:</label>
-                                <div class="preset-buttons">
-                                    <button type="button" class="preset-btn" data-preset="qpcr">qPCR</button>
-                                    <button type="button" class="preset-btn" data-preset="cloning">Клонирование</button>
-                                    <button type="button" class="preset-btn" data-preset="sequencing">Секвенирование</button>
-                                    <button type="button" class="preset-btn" data-preset="custom">Сброс</button>
-                                </div>
-                                <div class="preset-actions">
-                                    <button type="button" id="save-custom-preset" class="btn btn-small btn-outline">Сохранить как мой пресет</button>
-                                    <button type="button" id="export-advanced-settings" class="btn btn-small btn-outline">Экспорт</button>
-                                    <button type="button" id="import-advanced-settings" class="btn btn-small btn-outline">Импорт</button>
-                                </div>
-                            </div>
-
-                            <div class="advanced-checkboxes" data-mode="local">
-                                <label class="checkbox">
-                                    <input type="checkbox" id="check-hairpins" checked>
-                                    <span>Проверять шпильки</span>
-                                    <span class="setting-badge local-badge" title="Только в локальном режиме">💻 Локально</span>
-                                </label>
-                                <label class="checkbox">
-                                    <input type="checkbox" id="check-dimers" checked>
-                                    <span>Проверять димеры</span>
-                                    <span class="setting-badge local-badge" title="Только в локальном режиме">💻 Локально</span>
-                                </label>
-                                <label class="checkbox">
-                                    <input type="checkbox" id="check-repeats" checked>
-                                    <span>Проверять повторы</span>
-                                    <span class="setting-badge local-badge" title="Только в локальном режиме">💻 Локально</span>
-                                </label>
-                            </div>
-
-                            <div class="polyx-group" data-mode="local">
-                                <label class="slider-label">
-                                    Макс. длина поли-X участка:
-                                    <span id="polyx-value" class="slider-value">4</span> нуклеотидов
-                                    <span class="setting-badge local-badge" title="Только в локальном режиме">💻 Локально</span>
-                                </label>
-                                <input type="range" id="polyx-slider" class="slider"
-                                       min="3" max="8" value="4" step="1">
-                                <div class="slider-hint">
-                                    <small>Поли-A, поли-T, поли-G, поли-C (больше = риск скольжения полимеразы)</small>
-                                </div>
-                            </div>
-
-                            <div class="gradient-group" data-mode="both">
-                                <label class="slider-label">
-                                    Температурный градиент:
-                                    <span id="gradient-value" class="slider-value">5</span>°C
-                                    <span class="setting-badge server-badge" title="Отправляется на сервер">☁️ Сервер</span>
-                                    <span class="setting-badge local-badge" title="Локально">💻 Локально</span>
-                                </label>
-                                <input type="range" id="gradient-slider" class="slider" data-setting-tooltip="temperatureGradient"
-                                       min="0" max="15" value="5" step="0.5">
-                                <div class="slider-hint">
-                                    <small>Разница между Tm праймера и температурой отжига (0 = оптимально)</small>
-                                </div>
-                            </div>
-
-                            <div class="salt-group" data-mode="local">
-                                <label>Концентрация солей для расчета Tm: <span class="setting-badge local-badge" title="Только в локальном режиме">💻 Локально</span></label>
-                                <div class="salt-inputs">
-                                    <div class="salt-input-wrapper">
-                                        <span class="salt-label">Na⁺ (мМ):</span>
-                                        <input type="number" id="salt-na" class="salt-number"
-                                               value="50" min="0" max="500" step="10">
-                                    </div>
-                                    <div class="salt-input-wrapper">
-                                        <span class="salt-label">Mg²⁺ (мМ):</span>
-                                        <input type="number" id="salt-mg" class="salt-number"
-                                               value="1.5" min="0" max="10" step="0.5">
-                                    </div>
-                                    <div class="salt-input-wrapper">
-                                        <span class="salt-label">dNTPs (мМ):</span>
-                                        <input type="number" id="salt-dntp" class="salt-number"
-                                               value="0.2" min="0" max="2" step="0.1">
-                                    </div>
-                                    <div class="salt-input-wrapper">
-                                        <span class="salt-label">ДНК (нМ):</span>
-                                        <input type="number" id="salt-dna" class="salt-number"
-                                               value="50" min="0" max="500" step="10">
-                                    </div>
-                                    <div class="salt-input-wrapper">
-                                        <span class="salt-label">Праймер (нМ):</span>
-                                        <input type="number" id="salt-primer" class="salt-number"
-                                               value="200" min="0" max="1000" step="50">
-                                    </div>
-                                </div>
-                                <div class="slider-hint">
-                                    <small>Влияет на точность расчета Tm (метод ближайших соседей)</small>
-                                </div>
-                            </div>
-
-                            <div class="exclude-group" data-mode="both">
-                                <label>🚫 Исключить регионы (не выбирать праймеры): <span class="setting-badge server-badge" title="Отправляется на сервер">☁️ Сервер</span> <span class="setting-badge local-badge" title="Локально">💻 Локально</span></label>
-                                <div class="exclude-list" id="exclude-list"></div>
-                                <div class="exclude-add">
-                                    <div class="exclude-inputs">
-                                        <input type="number" id="exclude-start" class="exclude-number"
-                                               placeholder="Старт" min="0" step="1">
-                                        <span class="exclude-dash">–</span>
-                                        <input type="number" id="exclude-end" class="exclude-number"
-                                               placeholder="Конец" min="0" step="1">
-                                        <button type="button" id="exclude-add-btn" class="exclude-btn">➕</button>
-                                    </div>
-                                    <div class="exclude-presets">
-                                        <button type="button" class="exclude-preset" data-preset="low-complexity">Низкая сложность</button>
-                                        <button type="button" class="exclude-preset" data-preset="repeats">Повторы</button>
-                                        <button type="button" class="exclude-preset" data-preset="snp">Известные SNP</button>
-                                    </div>
-                                </div>
-                            </div>
-
-                            <div class="specificity-group" data-mode="local">
-                                <label class="checkbox">
-                                    <input type="checkbox" id="check-specificity">
-                                    <span>🔍 Проверять специфичность (уникальность в геноме)</span>
-                                    <span class="setting-badge local-badge" title="Только в локальном режиме">💻 Локально</span>
-                                </label>
-                                <div class="specificity-options" id="specificity-options" style="display: none; margin-left: 24px; margin-top: 8px;">
-                                    <div class="radio-group">
-                                        <label class="radio">
-                                            <input type="radio" name="specificity-level" value="strict" checked>
-                                            <span>Строгая (уникальные во всем геноме)</span>
-                                        </label>
-                                        <label class="radio">
-                                            <input type="radio" name="specificity-level" value="moderate">
-                                            <span>Умеренная (≤ 2 совпадений)</span>
-                                        </label>
-                                        <label class="radio">
-                                            <input type="radio" name="specificity-level" value="relaxed">
-                                            <span>Мягкая (≤ 5 совпадений)</span>
-                                        </label>
-                                    </div>
-                                    <select id="specificity-organism" class="specificity-select">
-                                        <option value="human">Человек (hg38)</option>
-                                        <option value="mouse">Мышь (mm39)</option>
-                                        <option value="rat">Крыса (rn7)</option>
-                                        <option value="zebrafish">Рыбка данио (GRCz11)</option>
-                                        <option value="arabidopsis">Арабидопсис (TAIR10)</option>
-                                        <option value="ecoli">E. coli (K12)</option>
-                                        <option value="custom">Загрузить свой геном...</option>
-                                    </select>
-                                </div>
-                            </div>
-
-                            <div class="settings-summary" id="settings-summary">
-                                <h4 class="settings-summary-title">📋 Сводка по настройкам</h4>
-                                <div class="summary-grid">
-                                    <div class="summary-item" data-mode="both">
-                                        <span class="summary-icon">☁️</span>
-                                        <span class="summary-text">Отправляются на сервер:</span>
-                                        <span class="summary-badges">
-                                            <span class="badge">Размер продукта</span>
-                                            <span class="badge">GC состав</span>
-                                            <span class="badge">Допуск Tm</span>
-                                            <span class="badge">Градиент</span>
-                                            <span class="badge">Исключённые регионы</span>
-                                        </span>
-                                    </div>
-                                    <div class="summary-item" data-mode="local">
-                                        <span class="summary-icon">💻</span>
-                                        <span class="summary-text">Только локально:</span>
-                                        <span class="summary-badges">
-                                            <span class="badge local">Шаг поиска</span>
-                                            <span class="badge local">Мин. расстояние</span>
-                                            <span class="badge local">Пороги риска</span>
-                                            <span class="badge local">Поли-X</span>
-                                            <span class="badge local">Концентрация солей</span>
-                                            <span class="badge local">Шпильки/димеры</span>
-                                            <span class="badge local">Специфичность</span>
-                                        </span>
-                                    </div>
-                                </div>
+            </div>
+                <aside class="panel-right">
+                    <div class="panel-right-inner">
+                        <div id="panel-right-invite" class="panel-right-invite">
+                            <p class="panel-right-invite-text">Подберите праймер, чтобы увидеть Анализ пересечений</p>
+                        </div>
+                        <div id="panel-right-analysis" class="panel-right-analysis" style="display: none;">
+                        <div class="panel-right-head">
+                        <div class="panel-right-title">📊 Анализ пересечений</div>
+                        <div class="viz-chart-label">📈 График</div>
+                        <div class="viz-zoom-toolbar">
+                            <label class="viz-zoom-label" for="viz-zoom-slider">Масштаб</label>
+                            <input type="range" id="viz-zoom-slider" class="viz-zoom-slider" min="0.5" max="10" step="0.1" value="1" title="Масштаб 50%–1000%">
+                            <span id="viz-zoom-value" class="viz-zoom-value">100%</span>
+                        </div>
+                        <div class="viz-scroll-wrapper viz-in-panel" id="visualization-scroll">
+                            <div id="visualization"></div>
+                        </div>
+                        </div>
+                        <div class="panel-right-overlap-stack">
+                        <div id="overlap-dynamic" class="overlap-dynamic"></div>
+                        <div id="overlap-pagination-strip" class="overlap-pagination-strip">
+                            <div class="pagination-bar overlap-pagination overlap-pagination-idle">
+                                <button type="button" class="pagination-btn" disabled tabindex="-1">←</button>
+                                <span class="pagination-info">—</span>
+                                <button type="button" class="pagination-btn" disabled tabindex="-1">→</button>
                             </div>
                         </div>
-                    </details>
+                        </div>
+                        </div>
+                    </div>
                 </aside>
-                <div class="results" id="results"></div>
             </div>
         </div>
 
@@ -473,7 +766,7 @@
                     </select>
                 </div>
 
-                <p class="settings-hint">⚙️ Расширенные настройки дизайна (размер продукта, Tm, GC, исключения и др.) находятся на вкладке <strong>Дизайн</strong> — слева от результатов.</p>
+                <p class="settings-hint">⚙️ Расширенные настройки дизайна — в левой колонке на вкладке <strong>Дизайн</strong>.</p>
 
                 <style>
                 .advanced-settings-details { margin: 16px 0; border: 1px solid #e2e8f0; border-radius: 8px; background: #f8fafc; }
@@ -583,14 +876,17 @@
             </div>
         </div>
 
-        <div class="footer">
-            <div class="version">v2.0.0</div>
-            <div class="links">
+        </main>
+        </div>
+        <footer class="footer">
+            <div class="footer-centered">
+                <span class="version">v2.0.0</span>
+                <span class="footer-sep">·</span>
                 <a href="#" id="feedback-link">Обратная связь</a>
-                <span class="separator">•</span>
+                <span class="footer-sep">•</span>
                 <a href="#" id="help-link">Помощь</a>
             </div>
-        </div>
+        </footer>
     </div>
 
     <script src="popup.js" type="module"></script>
