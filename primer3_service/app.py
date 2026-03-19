@@ -1,141 +1,52 @@
-"""
-Микросервис эталонного расчёта Primer3 (primer3-py).
-API совместим с расширением: POST /api/design/ с телом { sequence, tm, gc, length }.
-Отладка: PRIMER3_DEBUG=1 в окружении — логи запросов и дедупликации.
-"""
-from math import fabs
+"""Primer3 microservice with cache and health endpoints."""
+import hashlib
+import json
 import logging
 import os
+import time
+from typing import Any, Dict, Optional
 
-if os.environ.get("PRIMER3_DEBUG"):
-    logging.basicConfig(level=logging.DEBUG)
-
-from flask import Flask, request, jsonify
+import primer3
+from flask import Flask, jsonify, request
 from flask_cors import CORS
+
+from utils import boulder_to_results, calculate_gc
+
+logging.basicConfig(
+    level=logging.INFO if not os.environ.get("PRIMER3_DEBUG") else logging.DEBUG,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+logger = logging.getLogger("primer3_service")
 
 app = Flask(__name__)
 CORS(app, origins=os.environ.get("CORS_ORIGINS", "*").split(","))
 
-
-def _calc_tm(seq: str) -> float:
-    seq = seq.upper()
-    at = sum(1 for b in seq if b in "AT")
-    gc = sum(1 for b in seq if b in "GC")
-    return 2 * at + 4 * gc
+_MEM_CACHE: Dict[str, Dict[str, Any]] = {}
+CACHE_TTL_SEC = int(os.environ.get("CACHE_TTL", 3600))
+MAX_SEQUENCE = int(os.environ.get("PRIMER3_MAX_SEQUENCE", 10000))
 
 
-def _calc_gc(seq: str) -> float:
-    seq = seq.upper()
-    if not seq:
-        return 0.0
-    gc = sum(1 for b in seq if b in "GC")
-    return gc * 100.0 / len(seq)
+def _make_cache_key(sequence: str, body: Dict[str, Any]) -> str:
+    return hashlib.md5(f"{sequence}_{json.dumps(body, sort_keys=True)}".encode()).hexdigest()
 
 
-def _grade_from_score(score: float) -> dict:
-    if score >= 90:
-        return {"letter": "A+", "color": "#22c55e", "description": "Идеальная пара"}
-    if score >= 80:
-        return {"letter": "A", "color": "#22c55e", "description": "Отличная пара"}
-    if score >= 70:
-        return {"letter": "B", "color": "#3b82f6", "description": "Хорошая пара"}
-    if score >= 60:
-        return {"letter": "C", "color": "#eab308", "description": "Приемлемая пара"}
-    return {"letter": "D", "color": "#f97316", "description": "Требуется оптимизация"}
+def _cache_get(cache_key: str) -> Optional[Dict[str, Any]]:
+    rec = _MEM_CACHE.get(cache_key)
+    if not rec:
+        return None
+    if time.time() - rec["ts"] > CACHE_TTL_SEC:
+        _MEM_CACHE.pop(cache_key, None)
+        return None
+    return rec["value"]
 
 
-def _boulder_to_results(data: dict, sequence: str, target_tm: float, target_gc: float) -> list:
-    """Конвертирует вывод design_primers (BoulderIO) в формат расширения. Дубликаты по (seq+координаты) отфильтровываются."""
-    n = data.get("PRIMER_PAIR_NUM_RETURNED") or data.get("PRIMER_PAIR_NUM") or 0
-    results = []
-    seen_pairs = set()  # (fwd_seq, rev_seq, fwd_start, rev_start) для отсечения дубликатов
-    for i in range(n):
-        fwd_seq = data.get(f"PRIMER_LEFT_{i}_SEQUENCE") or ""
-        rev_seq = data.get(f"PRIMER_RIGHT_{i}_SEQUENCE") or ""
-        left_pos = data.get(f"PRIMER_LEFT_{i}")  # [start, length] or (start, length)
-        right_pos = data.get(f"PRIMER_RIGHT_{i}")
-        if isinstance(left_pos, (list, tuple)) and len(left_pos) >= 2:
-            fwd_start, fwd_len = int(left_pos[0]), int(left_pos[1])
-        else:
-            fwd_start = sequence.find(fwd_seq) if fwd_seq else 0
-            fwd_len = len(fwd_seq)
-        if isinstance(right_pos, (list, tuple)) and len(right_pos) >= 2:
-            rev_start = int(right_pos[0])
-            rev_len = int(right_pos[1])
-            rev_end = rev_start + rev_len
-        else:
-            rev_end = sequence.rfind(rev_seq) + len(rev_seq) if rev_seq else len(sequence)
-            rev_start = rev_end - len(rev_seq) if rev_seq else rev_end
-        pair_key = (fwd_seq, rev_seq, fwd_start, rev_start)
-        if pair_key in seen_pairs:
-            continue
-        seen_pairs.add(pair_key)
-        f_tm = data.get(f"PRIMER_LEFT_{i}_TM")
-        if f_tm is None:
-            f_tm = _calc_tm(fwd_seq)
-        r_tm = data.get(f"PRIMER_RIGHT_{i}_TM")
-        if r_tm is None:
-            r_tm = _calc_tm(rev_seq)
-        f_gc = data.get(f"PRIMER_LEFT_{i}_GC_PERCENT")
-        if f_gc is None:
-            f_gc = _calc_gc(fwd_seq)
-        r_gc = data.get(f"PRIMER_RIGHT_{i}_GC_PERCENT")
-        if r_gc is None:
-            r_gc = _calc_gc(rev_seq)
-        f_tm, r_tm = float(f_tm), float(r_tm)
-        f_gc, r_gc = float(f_gc), float(r_gc)
-        tm_penalty = fabs((f_tm + r_tm) / 2.0 - target_tm)
-        gc_penalty = fabs((f_gc + r_gc) / 2.0 - target_gc)
-        pair_tm_diff = fabs(f_tm - r_tm)
-        raw_score = max(0.0, 100.0 - (tm_penalty * 1.5 + gc_penalty + pair_tm_diff * 2.0))
-        grade = _grade_from_score(raw_score)
-        warnings = []
-        if pair_tm_diff > 3:
-            warnings.append(f"Разница Tm между праймерами {pair_tm_diff:.1f}°C")
-        self_any_l = data.get(f"PRIMER_LEFT_{i}_SELF_ANY_TH")
-        self_any_r = data.get(f"PRIMER_RIGHT_{i}_SELF_ANY_TH")
-        if self_any_l is not None and float(self_any_l) > 45:
-            warnings.append("Высокий риск шпилек в прямом праймере")
-        if self_any_r is not None and float(self_any_r) > 45:
-            warnings.append("Высокий риск шпилек в обратном праймере")
-        pair = {
-            "id": f"server_primer3_{i}",
-            "rank": i + 1,
-            "forward": {
-                "sequence": fwd_seq,
-                "start": fwd_start,
-                "end": fwd_start + fwd_len,
-                "details": {"tm": {"value": f_tm}, "gc": {"value": f_gc}},
-            },
-            "reverse": {
-                "sequence": rev_seq,
-                "start": rev_start,
-                "end": rev_end,
-                "details": {"tm": {"value": r_tm}, "gc": {"value": r_gc}},
-            },
-            "totalScore": int(raw_score),
-            "grade": grade,
-            "warnings": warnings,
-            "recommendations": [],
-            "source": "server_primer3",
-        }
-        results.append(pair)
-    results.sort(key=lambda x: x["totalScore"], reverse=True)
-    for idx, r in enumerate(results):
-        r["id"] = f"server_primer3_{idx}"
-        r["rank"] = idx + 1
-    if os.environ.get("PRIMER3_DEBUG") and n > 0:
-        print(f"DEBUG: Primer3 вернул {n} пар, уникальных после фильтрации: {len(results)}")
-        for i, r in enumerate(results):
-            fwd = (r.get("forward") or {}).get("sequence", "")[:10]
-            rev = (r.get("reverse") or {}).get("sequence", "")[:10]
-            print(f"  Пара {i}: {fwd}... / {rev}...")
-    return results
+def _cache_set(cache_key: str, value: Dict[str, Any]) -> None:
+    _MEM_CACHE[cache_key] = {"ts": time.time(), "value": value}
 
 
 @app.route("/api/design/", methods=["POST"])
 def design():
-    """Pass-through с учётом расширенных настроек: minProductSize, maxProductSize, excludeRegions, minGc, maxGc."""
+    """Main endpoint for primer design with local cache."""
     body = request.get_json() or {}
     sequence = (body.get("sequence") or "").upper().replace(" ", "").replace("\n", "")
     try:
@@ -146,8 +57,13 @@ def design():
         return jsonify({"detail": "Параметры tm/gc/length заданы некорректно"}), 400
     if len(sequence) < 50:
         return jsonify({"detail": "Минимальная длина последовательности: 50 нуклеотидов", "results": []}), 200
+    if len(sequence) > MAX_SEQUENCE:
+        return jsonify({"detail": f"Максимальная длина последовательности: {MAX_SEQUENCE}", "results": []}), 200
 
-    import primer3
+    cache_key = _make_cache_key(sequence, body)
+    cached = _cache_get(cache_key)
+    if cached:
+        return jsonify({"cached": True, **cached})
 
     # Диапазон размера продукта из запроса (профили qPCR / клонирование / секвенирование)
     min_product = body.get("minProductSize")
@@ -191,7 +107,7 @@ def design():
             f"min_product={min_product}, max_product={max_product}, exclude_regions={len(excluded_boulder)}"
         )
 
-    seq_gc = _calc_gc(sequence)
+    seq_gc = calculate_gc(sequence)
     if seq_gc > 75:
         min_gc = max(20, target_gc - 25)
         max_gc = 98
@@ -242,7 +158,10 @@ def design():
         "PRIMER_PICK_INTERNAL_OLIGO": 0,
     }
     try:
+        started = time.time()
         result = primer3.bindings.design_primers(seq_args, global_args)
+        duration = time.time() - started
+        logger.info("Primer3 finished in %.2fs", duration)
     except Exception as e:
         detail = str(e).strip()
         if len(detail) > 200:
@@ -258,13 +177,47 @@ def design():
         )
         return jsonify({"detail": explain, "results": []}), 200
 
-    results = _boulder_to_results(result, sequence, target_tm, target_gc)
-    return jsonify({"results": results})
+    results = boulder_to_results(result, sequence, target_tm, target_gc)
+    response = {
+        "results": results,
+        "metadata": {
+            "pairs_found": len(results),
+            "cache_ttl_sec": CACHE_TTL_SEC,
+        },
+    }
+    _cache_set(cache_key, response)
+    return jsonify(response)
 
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "primer3"})
+    return jsonify(
+        {
+            "status": "ok",
+            "service": "primer3",
+            "version": "2.0.0",
+            "cache_type": "memory",
+            "cache_entries": len(_MEM_CACHE),
+            "max_sequence": MAX_SEQUENCE,
+        }
+    )
+
+
+@app.route("/api/design/parameters/", methods=["GET"])
+def get_parameters():
+    return jsonify(
+        {
+            "parameters": {
+                "tm": {"min": 50, "max": 70, "default": 60},
+                "length": {"min": 18, "max": 35, "default": 22},
+                "gc": {"min": 30, "max": 70, "default": 50},
+                "product_size": {"min": 50, "max": 2000, "default_min": 80, "default_max": 500},
+                "tm_tolerance": {"min": 1, "max": 10, "default": 3},
+                "gradient": {"min": 0, "max": 15, "default": 5},
+            },
+            "version": "2.0.0",
+        }
+    )
 
 
 if __name__ == "__main__":

@@ -285,6 +285,18 @@
         .footer-sep { color: #94a3b8; user-select: none; }
         .tab-pane:not(#tab-design) { padding-top: 8px; }
         .settings-hint { font-size: 13px; color: #64748b; margin: 16px 0; padding: 12px; background: #f8fafc; border-radius: 8px; border: 1px solid #e2e8f0; }
+        .installer-panel { margin: 14px 0; padding: 12px; border: 1px solid #e2e8f0; border-radius: 10px; background: #f8fafc; }
+        .installer-title { margin: 0 0 8px; font-size: 14px; font-weight: 700; color: #334155; }
+        .installer-status { font-size: 12px; color: #64748b; margin-bottom: 10px; }
+        .installer-status.ok { color: #166534; }
+        .installer-status.warn { color: #92400e; }
+        .installer-options { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+        .installer-options .btn { flex: 1 1 150px; }
+        .installer-progress { display: none; font-size: 12px; color: #475569; margin-bottom: 10px; }
+        .installer-progress.active { display: block; }
+        .installer-progress-bar { width: 100%; height: 6px; border-radius: 999px; background: #e2e8f0; overflow: hidden; margin-top: 6px; }
+        .installer-progress-fill { width: 0%; height: 100%; background: #3b82f6; transition: width .2s ease; }
+        .installer-hint { font-size: 11px; color: #64748b; margin: 8px 0 0; }
     </style>
 </head>
 <body>
@@ -604,6 +616,20 @@
                 <button class="btn btn-small btn-primary" id="use-ncbi-and-design">Вставить и подобрать</button>
             </div>
 
+            <div class="gene-template-panel">
+                <div class="gene-search-row">
+                    <input type="text" id="gene-search" class="gene-search-input" placeholder="🔍 Шаблоны генов: TP53, BRCA1, ACTB, GAPDH">
+                    <button type="button" class="btn btn-small btn-outline" id="gene-search-btn">Найти</button>
+                </div>
+                <div class="gene-chip-row">
+                    <button type="button" class="gene-chip" data-gene="tp53">TP53</button>
+                    <button type="button" class="gene-chip" data-gene="brca1">BRCA1</button>
+                    <button type="button" class="gene-chip" data-gene="actb">ACTB</button>
+                    <button type="button" class="gene-chip" data-gene="gapdh">GAPDH</button>
+                </div>
+                <div id="gene-search-results" class="gene-search-results"></div>
+            </div>
+
             <div class="form-group panel-center-sequence-block">
                 <label for="sequence">Последовательность ДНК</label>
                 <textarea id="sequence"
@@ -765,6 +791,21 @@
                         <option value="system">Системная</option>
                     </select>
                 </div>
+
+                <section class="installer-panel" id="primer3-installer-panel">
+                    <h4 class="installer-title">🚀 Установка Primer3</h4>
+                    <div class="installer-status" id="installer-status">Определяем лучший способ установки...</div>
+                    <div class="installer-progress" id="installer-progress">
+                        <div id="installer-progress-text">Подготовка...</div>
+                        <div class="installer-progress-bar"><div class="installer-progress-fill" id="installer-progress-fill"></div></div>
+                    </div>
+                    <div class="installer-options">
+                        <button type="button" class="btn btn-outline" id="installer-auto-btn">✨ Установить автоматически</button>
+                        <button type="button" class="btn btn-outline" id="installer-verify-btn">✅ Проверить установку</button>
+                        <button type="button" class="btn btn-outline" id="installer-remind-btn">⏰ Напомнить позже</button>
+                    </div>
+                    <p class="installer-hint" id="installer-hint">Мастер подберет подходящий способ и подготовит установщик; на Linux/macOS потребуется запустить скрипт в терминале.</p>
+                </section>
 
                 <p class="settings-hint">⚙️ Расширенные настройки дизайна — в левой колонке на вкладке <strong>Дизайн</strong>.</p>
 

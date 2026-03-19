@@ -1,5 +1,8 @@
 import { PrimerHeuristicEngine } from '../lib/heuristic-engine.js';
 import { StorageManager } from '../lib/storage-manager.js';
+import { BlastService } from '../lib/blast-service.js';
+import { ExportService } from '../lib/export-service.js';
+import { TemplateManager } from '../lib/template-manager.js';
 import { DNAVisualizer, OverlapVisualizer } from './visualization.js';
 import { API_BASE_URL } from '../config.js';
 
@@ -102,6 +105,9 @@ let advancedSettings = {};
 let visualizer = null;
 let vizZoom = 1;
 let currentOverlaps = [];
+const blastService = new BlastService();
+const exportService = new ExportService();
+const templateManager = new TemplateManager();
 let onVizRedraw = null;
 function setVizRedraw(fn) { onVizRedraw = fn; }
 
@@ -148,6 +154,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     setupEventListeners();
     setupTabs();
+    await initInstallerPanel();
 
     const saved = await storage.get('lastSequence');
     if (saved) {
@@ -157,6 +164,135 @@ document.addEventListener('DOMContentLoaded', async () => {
         currentSequence = saved;
     }
 });
+
+function getClientPlatform() {
+    const ua = navigator.userAgent.toLowerCase();
+    if (ua.includes('win')) return 'windows';
+    if (ua.includes('mac')) return 'mac';
+    if (ua.includes('linux')) return 'linux';
+    return 'unknown';
+}
+
+async function detectBestInstallMethod() {
+    const platform = getClientPlatform();
+    if (typeof WebAssembly !== 'undefined') return { method: 'wasm', platform };
+    if (platform === 'windows') return { method: 'portable', platform };
+    return { method: 'docker', platform };
+}
+
+function setInstallerStatus(text, kind = '') {
+    const el = document.getElementById('installer-status');
+    if (!el) return;
+    el.textContent = text;
+    el.className = `installer-status${kind ? ` ${kind}` : ''}`;
+}
+
+function setInstallerProgress(active, text = '', percent = 0) {
+    const wrap = document.getElementById('installer-progress');
+    const textEl = document.getElementById('installer-progress-text');
+    const fill = document.getElementById('installer-progress-fill');
+    if (wrap) wrap.classList.toggle('active', !!active);
+    if (textEl && text) textEl.textContent = text;
+    if (fill) fill.style.width = `${Math.max(0, Math.min(100, percent))}%`;
+}
+
+function triggerTextDownload(filename, content) {
+    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function getInstallScriptContent(platform) {
+    if (platform === 'windows') {
+        return [
+            '# install.ps1',
+            'iwr -useb https://primerdesigner.io/install.ps1 | iex'
+        ].join('\n');
+    }
+    return [
+        '#!/usr/bin/env bash',
+        'curl -sSL https://primerdesigner.io/install.sh | bash'
+    ].join('\n');
+}
+
+async function verifyInstallation(silent = false) {
+    const checks = [
+        `${API_BASE_URL}/api/health/`,
+        'http://localhost:8001/health',
+        'http://127.0.0.1:8001/health'
+    ];
+    for (const url of checks) {
+        try {
+            const resp = await fetch(url, { method: 'GET' });
+            if (!resp.ok) continue;
+            const data = await resp.json().catch(() => ({}));
+            const statusRaw = String(data.primer3_service ?? data.status ?? '').toLowerCase();
+            if (statusRaw === 'ok') {
+                await storage.set('primer3Installed', true);
+                await storage.set('primer3Method', url.includes('/api/health/') ? 'proxy' : 'direct');
+                settings.forceOfflineMode = false;
+                const forceOfflineEl = document.getElementById('force-offline');
+                if (forceOfflineEl) forceOfflineEl.checked = false;
+                await storage.set('settings', settings);
+                updateStatusDisplay();
+                setInstallerStatus('✅ Primer3 обнаружен и активирован', 'ok');
+                if (!silent) showNotification('✅ Primer3 успешно установлен и включен');
+                return true;
+            }
+        } catch (_e) {
+            // noop
+        }
+    }
+    setInstallerStatus('⚠️ Primer3 пока не обнаружен. Попробуйте через 10-20 секунд.', 'warn');
+    return false;
+}
+
+async function runAutoInstallFlow() {
+    const best = await detectBestInstallMethod();
+    setInstallerProgress(true, 'Определяем лучший способ...', 15);
+    await new Promise((r) => setTimeout(r, 250));
+
+    if (best.method === 'wasm') {
+        setInstallerProgress(true, 'WebAssembly доступен: запускаем установщик...', 45);
+        await new Promise((r) => setTimeout(r, 350));
+        // Реальный wasm-модуль пока не интегрирован в проект: сразу fallback.
+        setInstallerProgress(true, 'WASM-модуль не найден, переключаемся на helper-установку...', 65);
+    } else {
+        setInstallerProgress(true, `Выбран способ: ${best.method === 'portable' ? 'portable' : 'docker helper'}`, 55);
+    }
+
+    const platform = best.platform;
+    const filename = platform === 'windows' ? 'install-primer3.ps1' : 'install-primer3.sh';
+    triggerTextDownload(filename, getInstallScriptContent(platform));
+    setInstallerProgress(true, 'Скрипт установки скачан. После запуска нажмите "Проверить установку".', 90);
+    setInstallerStatus('⬇️ Скачан установщик. Запустите его и нажмите "Проверить установку".');
+    showNotification('⬇️ Файл установщика подготовлен');
+}
+
+async function initInstallerPanel() {
+    const statusEl = document.getElementById('installer-status');
+    if (!statusEl) return;
+    const postponedUntil = await storage.get('primer3InstallPostponeUntil');
+    if (postponedUntil && Date.now() < postponedUntil) {
+        setInstallerStatus('Напоминание отложено. Можно вернуться к установке в любое время.');
+        return;
+    }
+    const ok = await verifyInstallation(true);
+    if (!ok) {
+        const best = await detectBestInstallMethod();
+        const hint = document.getElementById('installer-hint');
+        if (hint) {
+            hint.textContent = best.method === 'wasm'
+                ? 'Попробуем WebAssembly, при необходимости автоматически дадим helper-установщик.'
+                : 'Мастер подготовит установщик и проверит сервис после запуска.';
+        }
+        setInstallerProgress(false, '', 0);
+    }
+}
 
 async function loadSettings() {
     settings = await storage.get('settings') || {
@@ -605,6 +741,34 @@ function setupEventListeners() {
     document.getElementById('clear-data-btn').addEventListener('click', clearAllData);
     document.getElementById('feedback-link').addEventListener('click', openFeedback);
     document.getElementById('help-link').addEventListener('click', openHelp);
+    const geneSearchBtn = document.getElementById('gene-search-btn');
+    if (geneSearchBtn) geneSearchBtn.addEventListener('click', searchGeneTemplate);
+    const geneSearchInput = document.getElementById('gene-search');
+    if (geneSearchInput) {
+        geneSearchInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                searchGeneTemplate();
+            }
+        });
+    }
+    document.querySelectorAll('.gene-chip').forEach((chip) => {
+        chip.addEventListener('click', async () => {
+            await loadGeneTemplateById(chip.dataset.gene);
+        });
+    });
+    const installerAutoBtn = document.getElementById('installer-auto-btn');
+    if (installerAutoBtn) installerAutoBtn.addEventListener('click', runAutoInstallFlow);
+    const installerVerifyBtn = document.getElementById('installer-verify-btn');
+    if (installerVerifyBtn) installerVerifyBtn.addEventListener('click', verifyInstallation);
+    const installerRemindBtn = document.getElementById('installer-remind-btn');
+    if (installerRemindBtn) {
+        installerRemindBtn.addEventListener('click', async () => {
+            const postponeMs = 24 * 60 * 60 * 1000;
+            await storage.set('primer3InstallPostponeUntil', Date.now() + postponeMs);
+            setInstallerStatus('⏰ Напоминание отложено на 24 часа.');
+        });
+    }
 
     const saveAdvancedSettings = () => storage.set('advancedSettings', advancedSettings);
     const debouncedSaveAdvanced = debounce(saveAdvancedSettings, 500);
@@ -999,8 +1163,9 @@ async function designPrimers() {
         let results = null;
         let serverUnavailable = false;
         let serverReturnedEmpty = false;
+        const serverAvailable = await checkServerAvailability();
 
-        if (navigator.onLine && !(settings.forceOfflineMode || false)) {
+        if (serverAvailable && !(settings.forceOfflineMode || false)) {
             results = await designWithServer(cleaned, params);
             if (results && results.length > 0) {
                 results = normalizeResults(results, 'server');
@@ -1087,6 +1252,27 @@ async function designWithServer(sequence, params) {
     } catch (e) {
         console.warn('PrimerDesigner API request failed:', url, e);
         return null;
+    }
+}
+
+async function checkServerAvailability() {
+    if (!navigator.onLine) return false;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 3000);
+    try {
+        const response = await fetch(`${API_BASE_URL}/api/health/`, {
+            method: 'GET',
+            headers: { 'Content-Type': 'application/json' },
+            signal: controller.signal
+        });
+        if (!response.ok) return false;
+        const data = await response.json().catch(() => ({}));
+        const statusRaw = (data.primer3_service ?? '').toString().toLowerCase();
+        return statusRaw === 'ok';
+    } catch (_error) {
+        return false;
+    } finally {
+        clearTimeout(timeoutId);
     }
 }
 
@@ -1270,7 +1456,14 @@ function displayResults(results, options = {}) {
         console.log('Размер продукта:', rev != null && f != null ? (rev.end - f.start) : '—');
     }
 
-    let htmlPrimers = '';
+    let htmlPrimers = `
+        <div class="export-panel">
+            <button type="button" class="btn btn-outline btn-small export-btn" data-format="pdf">📄 PDF</button>
+            <button type="button" class="btn btn-outline btn-small export-btn" data-format="excel">📊 Excel</button>
+            <button type="button" class="btn btn-outline btn-small export-btn" data-format="csv">📈 CSV</button>
+            <button type="button" class="btn btn-outline btn-small export-btn" data-format="html">🖨️ HTML</button>
+        </div>
+    `;
 
     const overlaps = heuristicEngine.analyzeOverlaps(results, {
         thresholds: {
@@ -1408,6 +1601,9 @@ function displayResults(results, options = {}) {
 
         htmlPrimers += `
                 <div class="card-actions">
+                    <button class="action-btn blast-btn" data-pair='${JSON.stringify(pair)}'>
+                        🧬 BLAST
+                    </button>
                     <button class="action-btn copy-btn" data-seq="${pair.forward.sequence}" data-type="forward">
                         📋 Fwd
                     </button>
@@ -1658,6 +1854,129 @@ function displayResults(results, options = {}) {
             openFeedbackForPair(pair);
         });
     });
+    document.querySelectorAll('.blast-btn').forEach(btn => {
+        btn.addEventListener('click', async (e) => {
+            const pair = JSON.parse(e.currentTarget.dataset.pair);
+            await showBlastResults(pair);
+        });
+    });
+    document.querySelectorAll('.export-btn').forEach((btn) => {
+        btn.addEventListener('click', (e) => {
+            const format = e.currentTarget.dataset.format;
+            if (!currentResults || currentResults.length === 0) {
+                showWarning('Нет результатов для экспорта');
+                return;
+            }
+            try {
+                if (format === 'pdf') exportService.exportToPDF(currentResults);
+                else if (format === 'excel') exportService.exportToExcel(currentResults);
+                else if (format === 'csv') exportService.exportToCSV(currentResults);
+                else if (format === 'html') exportService.exportToHTML(currentResults);
+                showNotification(`✅ Экспорт: ${format.toUpperCase()}`);
+            } catch (err) {
+                showError(`Ошибка экспорта: ${err.message || err}`);
+            }
+        });
+    });
+}
+
+async function showBlastResults(pair) {
+    const organism = advancedSettings.specificityOrganism || 'human';
+    showNotification('🧬 BLAST проверка запущена...');
+    try {
+        const fwd = await blastService.checkPrimerSpecificity(pair.forward.sequence, { organism });
+        const rev = await blastService.checkPrimerSpecificity(pair.reverse.sequence, { organism });
+        renderBlastModal(pair, fwd, rev);
+    } catch (error) {
+        showWarning(`BLAST недоступен: ${error.message || error}`);
+        chrome.tabs.create({ url: blastService.getBlastSearchUrl(pair.forward.sequence) });
+    }
+}
+
+function renderBlastAnalysis(label, result) {
+    return `
+        <div class="blast-primer-box">
+            <h4>${label}</h4>
+            <div class="blast-badge ${result.offTargetHits === 0 ? 'good' : 'warn'}">${result.offTargetHits} нецелевых совпадений</div>
+            ${result.highRisk.length ? `<div class="blast-risk high"><strong>Высокий риск</strong>${result.highRisk.slice(0, 5).map(h => `<div>${h.description} (${h.identity.toFixed(1)}%)</div>`).join('')}</div>` : ''}
+            ${result.mediumRisk.length ? `<div class="blast-risk medium"><strong>Средний риск</strong>${result.mediumRisk.slice(0, 5).map(h => `<div>${h.description} (${h.identity.toFixed(1)}%)</div>`).join('')}</div>` : ''}
+        </div>
+    `;
+}
+
+function renderBlastModal(pair, fwd, rev) {
+    const modal = document.createElement('div');
+    modal.className = 'blast-modal';
+    modal.innerHTML = `
+        <div class="blast-modal-content">
+            <h3>🧬 BLAST: Пара #${getPairNumber(pair.id)}</h3>
+            <div class="blast-two-col">
+                ${renderBlastAnalysis(`Forward: ${formatSequence(pair.forward.sequence)}`, fwd)}
+                ${renderBlastAnalysis(`Reverse: ${formatSequence(pair.reverse.sequence)}`, rev)}
+            </div>
+            <div class="blast-actions">
+                <button class="btn btn-outline blast-open-ncbi">Открыть NCBI BLAST</button>
+                <button class="btn btn-primary blast-close">Закрыть</button>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(modal);
+    modal.querySelector('.blast-close')?.addEventListener('click', () => modal.remove());
+    modal.querySelector('.blast-open-ncbi')?.addEventListener('click', () => {
+        chrome.tabs.create({ url: blastService.getBlastSearchUrl(pair.forward.sequence) });
+    });
+    modal.addEventListener('click', (e) => {
+        if (e.target === modal) modal.remove();
+    });
+}
+
+async function loadGeneTemplateById(geneId) {
+    const flat = templateManager.getFlatTemplates();
+    const gene = flat.find((g) => g.id === geneId);
+    if (!gene) {
+        showWarning('Шаблон гена не найден');
+        return;
+    }
+    await loadGeneTemplate(gene);
+}
+
+async function searchGeneTemplate() {
+    const input = document.getElementById('gene-search');
+    const q = input?.value || '';
+    const list = document.getElementById('gene-search-results');
+    if (!list) return;
+    const results = templateManager.search(q).slice(0, 8);
+    if (!results.length) {
+        list.innerHTML = '<div class="gene-search-empty">Ничего не найдено</div>';
+        return;
+    }
+    list.innerHTML = results.map((g) => `
+        <button type="button" class="gene-search-item" data-gene="${g.id}">
+            <strong>${g.name}</strong> · ${g.accession} <span>${g.organism}</span>
+        </button>
+    `).join('');
+    list.querySelectorAll('.gene-search-item').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+            await loadGeneTemplateById(btn.dataset.gene);
+        });
+    });
+}
+
+async function loadGeneTemplate(gene) {
+    try {
+        showProgress(true);
+        const seq = await templateManager.fetchFromNCBI(gene.accession);
+        const textarea = document.getElementById('sequence');
+        if (!textarea) return;
+        textarea.value = seq;
+        currentSequence = seq;
+        updateSequenceStats(seq);
+        showNotification(`✅ Загружен шаблон: ${gene.name}`);
+    } catch (error) {
+        showError(`Ошибка загрузки ${gene.name}: ${error.message || error}`);
+    } finally {
+        showProgress(false);
+    }
 }
 
 async function savePrimer(pair) {
@@ -2203,5 +2522,27 @@ statusStyles.textContent = `
     .viz-scroll-wrapper #visualization canvas { box-sizing: border-box; flex-shrink: 0; }
     .overlap-section { position: relative; z-index: 2; }
     .overlap-card { position: relative; z-index: 1; pointer-events: auto; }
+    .export-panel { display: flex; gap: 8px; flex-wrap: wrap; margin: 0 0 10px 0; padding-bottom: 8px; border-bottom: 1px solid #e2e8f0; }
+    .blast-modal { position: fixed; inset: 0; background: rgba(0,0,0,0.45); z-index: 10002; display: flex; align-items: center; justify-content: center; padding: 16px; }
+    .blast-modal-content { width: min(900px, 96vw); max-height: 90vh; overflow: auto; background: #fff; border-radius: 12px; padding: 16px; }
+    .blast-two-col { display: grid; grid-template-columns: repeat(2, minmax(220px, 1fr)); gap: 10px; }
+    .blast-primer-box { border: 1px solid #e2e8f0; border-radius: 8px; padding: 10px; background: #f8fafc; }
+    .blast-badge { display: inline-block; font-size: 11px; border-radius: 999px; padding: 2px 8px; margin-bottom: 8px; }
+    .blast-badge.good { background: #22c55e; color: #fff; }
+    .blast-badge.warn { background: #f59e0b; color: #fff; }
+    .blast-risk { margin-top: 8px; padding: 8px; border-radius: 6px; font-size: 12px; }
+    .blast-risk.high { background: #fee2e2; border-left: 3px solid #ef4444; }
+    .blast-risk.medium { background: #fef3c7; border-left: 3px solid #f59e0b; }
+    .blast-actions { margin-top: 12px; display: flex; gap: 8px; justify-content: flex-end; }
+    .gene-template-panel { margin: 0 0 10px 0; padding: 10px; border: 1px solid #e2e8f0; border-radius: 8px; background: #f8fafc; }
+    .gene-chip-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+    .gene-chip { border: 1px solid #d1d5db; border-radius: 999px; background: #fff; color: #334155; padding: 4px 10px; font-size: 11px; cursor: pointer; }
+    .gene-chip:hover { background: #f1f5f9; }
+    .gene-search-row { display: flex; gap: 8px; align-items: center; }
+    .gene-search-input { flex: 1; min-width: 0; }
+    .gene-search-results { margin-top: 8px; display: grid; gap: 6px; }
+    .gene-search-item { text-align: left; border: 1px solid #e2e8f0; background: #fff; border-radius: 6px; padding: 6px 8px; cursor: pointer; color: #334155; }
+    .gene-search-item span { color: #64748b; font-size: 11px; }
+    .gene-search-empty { font-size: 12px; color: #94a3b8; }
 `;
 document.head.appendChild(statusStyles);

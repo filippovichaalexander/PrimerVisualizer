@@ -1,0 +1,41 @@
+FROM python:3.11-slim as builder
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y \
+    gcc \
+    g++ \
+    make \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY primer3_service/requirements.txt /app/requirements.txt
+RUN pip install --user --no-cache-dir -r /app/requirements.txt
+
+FROM python:3.11-slim
+
+WORKDIR /app
+
+COPY --from=builder /root/.local /root/.local
+
+RUN apt-get update && apt-get install -y \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV PATH=/root/.local/bin:$PATH
+
+COPY primer3_service/app.py /app/app.py
+COPY primer3_service/utils.py /app/utils.py
+
+RUN useradd -m -u 1000 primer && chown -R primer:primer /app
+USER primer
+
+ENV PYTHONUNBUFFERED=1
+ENV PORT=8001
+ENV FLASK_ENV=production
+
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:${PORT}/health || exit 1
+
+EXPOSE ${PORT}
+
+CMD ["python", "app.py"]
