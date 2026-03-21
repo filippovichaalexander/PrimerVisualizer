@@ -1,3 +1,6 @@
+# Сообщение WARN "No services to build" при `docker compose up` часто означает, что образы уже есть
+# и пересборка не запрашивалась — это не ошибка. Чтобы пересобрать: docker compose up -d --build backend primer3-service
+
 services:
   backend:
     build:

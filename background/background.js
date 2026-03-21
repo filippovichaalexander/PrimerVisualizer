@@ -79,12 +79,25 @@ async function quickDesign(sequence, tab) {
     }
 
     const primers = generatePrimers(cleaned);
+    const ts = Date.now();
+    const scores = primers.map((p) => Number(p.totalScore)).filter((n) => Number.isFinite(n));
+    const bestScore = scores.length ? Math.max(...scores) : 0;
+    const settings = (await storage.get('settings')) || {};
 
     await storage.addToHistory({
+        id: ts,
         sequence: cleaned,
+        sequence_length: cleaned.length,
+        results_count: primers.length,
+        best_score: bestScore,
+        parameters: {
+            tm: settings.defaultTm ?? 60,
+            gc: settings.defaultGc ?? 50,
+            length: settings.primerLength ?? 22,
+        },
         primers,
-        timestamp: Date.now(),
-        source: tab?.url || 'manual'
+        timestamp: ts,
+        source: tab?.url || 'manual',
     });
 
     if (tab?.id) {

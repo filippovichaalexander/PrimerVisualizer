@@ -8,7 +8,28 @@
 - `backend/Dockerfile` — контейнер для dev‑запуска.
 - `docker-compose.yml` (в корне) — поднимает backend на `http://127.0.0.1:8000`.
 - `backend/primer_backend` — стандартный Django‑проект.
-- `backend/primerapi` — приложение с эндпоинтом `POST /api/design/`.
+- `backend/primerapi` — приложение с эндпоинтами `POST /api/design/`, **аутентификация** для расширения (ниже).
+
+### Аутентификация (регистрация / вход)
+
+Расширение обращается к:
+
+| Метод | Путь | Описание |
+|--------|------|----------|
+| `POST` | `/api/auth/register/` | Тело: `{ "email", "password", "name?" }` → `{ "token", "user" }` |
+| `POST` | `/api/auth/login/` | `{ "email", "password" }` → `{ "token", "user" }` |
+| `GET` | `/api/auth/validate/` | Заголовок `Authorization: Bearer <token>` → `{ "user" }` |
+
+Используется DRF **Token** + префикс **`Bearer`** (как в `user-manager.js` / `sync-engine.js`). После добавления `rest_framework.authtoken` при первом старте контейнера выполните миграции (в `docker-compose` это уже есть: `python manage.py migrate`).
+
+Проверка из терминала:
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/api/auth/register/ \
+  -H "Content-Type: application/json" \
+  -d '{"email":"test@example.com","password":"secret12","name":"Test"}'
+```
+Ожидается JSON с `token` и `user`. Если **404** — поднимите актуальный backend (`docker compose up -d --build backend`) и перезапустите контейнер, чтобы применились миграции.
 
 ### Очистка кэша перед запуском
 

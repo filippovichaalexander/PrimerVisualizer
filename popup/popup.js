@@ -3,24 +3,33 @@ import { StorageManager } from '../lib/storage-manager.js';
 import { BlastService } from '../lib/blast-service.js';
 import { ExportService } from '../lib/export-service.js';
 import { TemplateManager } from '../lib/template-manager.js';
+import { UserManager } from '../lib/user-manager.js';
+import { SyncEngine } from '../lib/sync-engine.js';
 import { DNAVisualizer, OverlapVisualizer } from './visualization.js';
 import { API_BASE_URL } from '../config.js';
+import { overlapPaginationIdleHtml } from './overlap-html.js';
+import { runInstallerStartupCheck } from './installer-panel.js';
+import { createDesignHandlers } from './design-flow.js';
+import { setupSettingsEventListeners } from './settings-bindings.js';
+import { initUserCabinet } from './user-cabinet.js';
+import { configureBlastUi, showBlastResults } from './blast-ui.js';
+import { configureDisplayResults, displayResults } from './display-results.js';
+import { HistoryManager } from '../lib/history-manager.js';
+import { initHistoryPanel } from './history-ui.js';
 
 const heuristicEngine = new PrimerHeuristicEngine();
 const storage = new StorageManager();
+const historyManager = new HistoryManager(storage);
+const userManager = new UserManager(storage, API_BASE_URL);
+const syncEngine = new SyncEngine(storage, userManager, API_BASE_URL);
 
 /** Пар на странице в центральной колонке (высота колонки фиксирована). */
 const PRIMER_RESULTS_PER_PAGE = 3;
 /** Пересечений на странице в правой колонке (под полосой пагинации). */
 const OVERLAP_PER_PAGE = 8;
 
-function overlapPaginationIdleHtml() {
-    return `<div class="pagination-bar overlap-pagination overlap-pagination-idle">
-        <button type="button" class="pagination-btn" disabled tabindex="-1">←</button>
-        <span class="pagination-info">—</span>
-        <button type="button" class="pagination-btn" disabled tabindex="-1">→</button>
-    </div>`;
-}
+/** @type {ReturnType<typeof createDesignHandlers> | null} */
+let designHandlers = null;
 
 /** Правая колонка: график и «Анализ пересечений» только после успешного подбора. */
 function setPanelRightAnalysisVisible(visible) {
@@ -30,86 +39,20 @@ function setPanelRightAnalysisVisible(visible) {
     if (analysis) analysis.style.display = visible ? 'flex' : 'none';
 }
 
-/** Извлекает номер пары из id (server_primer3_0 → 1, local_2 → 3) для отображения. */
-function getPairNumber(id) {
-    if (id == null || id === '') return '?';
-    const match = String(id).match(/_(\d+)$/);
-    return match ? parseInt(match[1], 10) + 1 : '?';
-}
-
-/** Нормализует результаты онлайн/оффлайн к одной структуре: id, forward/reverse { start, end, sequence, details }. */
-function normalizeResults(results, sourceHint = null) {
-    if (!Array.isArray(results) || results.length === 0) return results;
-    return results.map((r, i) => {
-        const source = r.source ?? sourceHint ?? (r.id && String(r.id).startsWith('server') ? 'server' : 'local');
-        const prefix = source === 'server' || (r.id && String(r.id).startsWith('server')) ? 'server' : 'local';
-        const id = r.id != null && String(r.id) !== '' ? String(r.id) : `${prefix}_${i}`;
-        const f = r.forward || {};
-        const fDetails = f.details || {};
-        const fTm = fDetails.tm && typeof fDetails.tm === 'object' ? fDetails.tm.value : fDetails.tm;
-        const fGc = fDetails.gc && typeof fDetails.gc === 'object' ? fDetails.gc.value : fDetails.gc;
-        const rev = r.reverse || {};
-        const rDetails = rev.details || {};
-        const rTm = rDetails.tm && typeof rDetails.tm === 'object' ? rDetails.tm.value : rDetails.tm;
-        const rGc = rDetails.gc && typeof rDetails.gc === 'object' ? rDetails.gc.value : rDetails.gc;
-        const rawScore = r.totalScore ?? r.total_score;
-        const totalScore = rawScore != null && Number.isFinite(Number(rawScore)) ? Number(rawScore) : null;
-        const gradeObj = r.grade && typeof r.grade === 'object' ? r.grade : {};
-        const grade = {
-            letter: gradeObj.letter ?? '—',
-            color: gradeObj.color ?? '#94a3b8',
-            description: gradeObj.description ?? '',
-        };
-        return {
-            ...r,
-            id,
-            rank: r.rank != null ? r.rank : i + 1,
-            totalScore,
-            grade,
-            forward: {
-                sequence: f.sequence ?? '',
-                start: f.start ?? 0,
-                end: f.end ?? (f.start ?? 0) + (f.sequence ?? '').length,
-                ...f,
-                details: {
-                    ...fDetails,
-                    tm: typeof fTm === 'number' ? { value: fTm } : (fDetails.tm || { value: 0 }),
-                    gc: typeof fGc === 'number' ? { value: fGc } : (fDetails.gc || { value: 0 }),
-                },
-            },
-            reverse: {
-                sequence: rev.sequence ?? '',
-                start: rev.start ?? 0,
-                end: rev.end ?? (rev.start ?? 0) + (rev.sequence ?? '').length,
-                ...rev,
-                details: {
-                    ...rDetails,
-                    tm: typeof rTm === 'number' ? { value: rTm } : (rDetails.tm || { value: 0 }),
-                    gc: typeof rGc === 'number' ? { value: rGc } : (rDetails.gc || { value: 0 }),
-                },
-            },
-            warnings: Array.isArray(r.warnings) ? r.warnings : (r.warnings ? [r.warnings] : []),
-            recommendations: Array.isArray(r.recommendations) ? r.recommendations : (r.recommendations ? [r.recommendations] : []),
-            source: r.source ?? source,
-        };
-    });
-}
-
 let currentSequence = '';
 let currentResults = null;
-let resultsPage = 1;
-let overlapPage = 1;
-let overlapTab = 'all';
 let settings = {};
 let advancedSettings = {};
 let visualizer = null;
 let vizZoom = 1;
-let currentOverlaps = [];
 const blastService = new BlastService();
 const exportService = new ExportService();
 const templateManager = new TemplateManager();
 let onVizRedraw = null;
 function setVizRedraw(fn) { onVizRedraw = fn; }
+
+/** @type {() => Promise<void>} */
+let refreshHistoryView = async () => {};
 
 function scrollVizToCenter() {
     const scrollEl = document.getElementById('visualization-scroll');
@@ -131,7 +74,6 @@ function updateOverlapVisualizationForCurrent() {
             high: advancedSettings.highThreshold
         }
     });
-    currentOverlaps = overlaps;
     const pairIdxAttr = document.querySelector('.result-card.result-card-highlighted')?.dataset.pairIndex;
     const overlapIdxAttr = document.querySelector('.overlap-card.highlighted')?.dataset.overlapIndex;
     const pairIndex = pairIdxAttr != null ? parseInt(pairIdxAttr, 10) : -1;
@@ -147,14 +89,116 @@ document.addEventListener('DOMContentLoaded', async () => {
     visualizer = new DNAVisualizer('visualization');
     setPanelRightAnalysisVisible(false);
 
+    configureBlastUi({
+        blastService,
+        getAdvancedSettings: () => advancedSettings,
+        showNotification,
+        showWarning,
+    });
+    configureDisplayResults({
+        API_BASE_URL,
+        heuristicEngine,
+        getAdvancedSettings: () => advancedSettings,
+        getVisualizer: () => visualizer,
+        getVizZoom: () => vizZoom,
+        getCurrentSequence: () => currentSequence,
+        getCurrentResults: () => currentResults,
+        OverlapVisualizer,
+        setPanelRightAnalysisVisible,
+        setVizRedraw,
+        scrollVizToCenter,
+        savePrimer,
+        openFeedbackForPair,
+        showBlastResults,
+        showWarning,
+        showError,
+        showNotification,
+        exportService,
+        PRIMER_RESULTS_PER_PAGE,
+        OVERLAP_PER_PAGE,
+    });
+
+    designHandlers = createDesignHandlers({
+        API_BASE_URL,
+        storage,
+        heuristicEngine,
+        getSettings: () => settings,
+        getAdvancedSettings: () => advancedSettings,
+        setCurrentSequence: (s) => { currentSequence = s; },
+        setCurrentResults: (r) => { currentResults = r; },
+        showError,
+        showWarning,
+        showProgress,
+    });
+
     await loadSettings();
     await loadStats();
     checkNetworkStatus();
     await checkForNCBIData();
 
-    setupEventListeners();
+    setupSettingsEventListeners({
+        designPrimers: () => designHandlers.designPrimers(),
+        clearForm,
+        pasteFromClipboard,
+        loadSample,
+        useNCBIData,
+        useNCBIDataAndDesign,
+        updateSequenceStats,
+        setCurrentSequence: (s) => { currentSequence = s; },
+        saveSettings,
+        toggleForceOfflineMode,
+        checkNetworkStatus,
+        exportData,
+        clearAllData,
+        openFeedback,
+        openHelp,
+        searchGeneTemplate,
+        loadGeneTemplateById,
+        storage,
+        API_BASE_URL,
+        getSettings: () => settings,
+        updateStatusDisplay,
+        showNotification,
+        getAdvancedSettings: () => advancedSettings,
+        updateOverlapVisualizationForCurrent,
+        updateSidebarKv,
+        updateThresholdDisplay,
+        updateAdvancedSettingsUI,
+        updateNewSettingsUI,
+        validateExcludeRegion,
+        updateExcludeRegionsList,
+        applyPreset,
+        getTooltipForSetting,
+        getVizZoom: () => vizZoom,
+        setVizZoom: (z) => { vizZoom = z; },
+        getVizRedraw: () => onVizRedraw,
+        getCurrentSequence: () => currentSequence,
+    });
     setupTabs();
-    await initInstallerPanel();
+    refreshHistoryView = initHistoryPanel({
+        historyManager,
+        storage,
+        setCurrentSequence: (s) => { currentSequence = s; },
+        setCurrentResults: (r) => { currentResults = r; },
+        updateSequenceStats,
+        showNotification,
+        showWarning,
+        setPanelRightAnalysisVisible,
+    });
+    await runInstallerStartupCheck({
+        storage,
+        API_BASE_URL,
+        getSettings: () => settings,
+        updateStatusDisplay,
+        showNotification,
+    });
+    await userManager.init();
+    initUserCabinet({
+        userManager,
+        syncEngine,
+        showNotification,
+        onAfterSyncRefresh: refreshAfterCabinetSync,
+    });
 
     const saved = await storage.get('lastSequence');
     if (saved) {
@@ -165,133 +209,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 });
 
-function getClientPlatform() {
-    const ua = navigator.userAgent.toLowerCase();
-    if (ua.includes('win')) return 'windows';
-    if (ua.includes('mac')) return 'mac';
-    if (ua.includes('linux')) return 'linux';
-    return 'unknown';
-}
-
-async function detectBestInstallMethod() {
-    const platform = getClientPlatform();
-    if (typeof WebAssembly !== 'undefined') return { method: 'wasm', platform };
-    if (platform === 'windows') return { method: 'portable', platform };
-    return { method: 'docker', platform };
-}
-
-function setInstallerStatus(text, kind = '') {
-    const el = document.getElementById('installer-status');
-    if (!el) return;
-    el.textContent = text;
-    el.className = `installer-status${kind ? ` ${kind}` : ''}`;
-}
-
-function setInstallerProgress(active, text = '', percent = 0) {
-    const wrap = document.getElementById('installer-progress');
-    const textEl = document.getElementById('installer-progress-text');
-    const fill = document.getElementById('installer-progress-fill');
-    if (wrap) wrap.classList.toggle('active', !!active);
-    if (textEl && text) textEl.textContent = text;
-    if (fill) fill.style.width = `${Math.max(0, Math.min(100, percent))}%`;
-}
-
-function triggerTextDownload(filename, content) {
-    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-}
-
-function getInstallScriptContent(platform) {
-    if (platform === 'windows') {
-        return [
-            '# install.ps1',
-            'iwr -useb https://primerdesigner.io/install.ps1 | iex'
-        ].join('\n');
-    }
-    return [
-        '#!/usr/bin/env bash',
-        'curl -sSL https://primerdesigner.io/install.sh | bash'
-    ].join('\n');
-}
-
-async function verifyInstallation(silent = false) {
-    const checks = [
-        `${API_BASE_URL}/api/health/`,
-        'http://localhost:8001/health',
-        'http://127.0.0.1:8001/health'
-    ];
-    for (const url of checks) {
-        try {
-            const resp = await fetch(url, { method: 'GET' });
-            if (!resp.ok) continue;
-            const data = await resp.json().catch(() => ({}));
-            const statusRaw = String(data.primer3_service ?? data.status ?? '').toLowerCase();
-            if (statusRaw === 'ok') {
-                await storage.set('primer3Installed', true);
-                await storage.set('primer3Method', url.includes('/api/health/') ? 'proxy' : 'direct');
-                settings.forceOfflineMode = false;
-                const forceOfflineEl = document.getElementById('force-offline');
-                if (forceOfflineEl) forceOfflineEl.checked = false;
-                await storage.set('settings', settings);
-                updateStatusDisplay();
-                setInstallerStatus('✅ Primer3 обнаружен и активирован', 'ok');
-                if (!silent) showNotification('✅ Primer3 успешно установлен и включен');
-                return true;
-            }
-        } catch (_e) {
-            // noop
-        }
-    }
-    setInstallerStatus('⚠️ Primer3 пока не обнаружен. Попробуйте через 10-20 секунд.', 'warn');
-    return false;
-}
-
-async function runAutoInstallFlow() {
-    const best = await detectBestInstallMethod();
-    setInstallerProgress(true, 'Определяем лучший способ...', 15);
-    await new Promise((r) => setTimeout(r, 250));
-
-    if (best.method === 'wasm') {
-        setInstallerProgress(true, 'WebAssembly доступен: запускаем установщик...', 45);
-        await new Promise((r) => setTimeout(r, 350));
-        // Реальный wasm-модуль пока не интегрирован в проект: сразу fallback.
-        setInstallerProgress(true, 'WASM-модуль не найден, переключаемся на helper-установку...', 65);
-    } else {
-        setInstallerProgress(true, `Выбран способ: ${best.method === 'portable' ? 'portable' : 'docker helper'}`, 55);
-    }
-
-    const platform = best.platform;
-    const filename = platform === 'windows' ? 'install-primer3.ps1' : 'install-primer3.sh';
-    triggerTextDownload(filename, getInstallScriptContent(platform));
-    setInstallerProgress(true, 'Скрипт установки скачан. После запуска нажмите "Проверить установку".', 90);
-    setInstallerStatus('⬇️ Скачан установщик. Запустите его и нажмите "Проверить установку".');
-    showNotification('⬇️ Файл установщика подготовлен');
-}
-
-async function initInstallerPanel() {
-    const statusEl = document.getElementById('installer-status');
-    if (!statusEl) return;
-    const postponedUntil = await storage.get('primer3InstallPostponeUntil');
-    if (postponedUntil && Date.now() < postponedUntil) {
-        setInstallerStatus('Напоминание отложено. Можно вернуться к установке в любое время.');
-        return;
-    }
-    const ok = await verifyInstallation(true);
-    if (!ok) {
-        const best = await detectBestInstallMethod();
-        const hint = document.getElementById('installer-hint');
-        if (hint) {
-            hint.textContent = best.method === 'wasm'
-                ? 'Попробуем WebAssembly, при необходимости автоматически дадим helper-установщик.'
-                : 'Мастер подготовит установщик и проверит сервис после запуска.';
-        }
-        setInstallerProgress(false, '', 0);
-    }
+async function refreshAfterCabinetSync() {
+    await loadSettings();
+    await loadStats();
+    await loadSavedPrimers();
+    await loadHistory();
 }
 
 async function loadSettings() {
@@ -549,14 +471,6 @@ async function loadStats() {
         stats.installDate ? new Date(stats.installDate).toLocaleDateString() : '-';
 }
 
-function debounce(func, wait) {
-    let timeout;
-    return function executedFunction(...args) {
-        clearTimeout(timeout);
-        timeout = setTimeout(() => func.apply(this, args), wait);
-    };
-}
-
 function applyPreset(preset) {
     const textarea = document.getElementById('sequence');
     const seqStr = (textarea && textarea.value) ? textarea.value.replace(/\s/g, '') : '';
@@ -711,396 +625,6 @@ async function checkForNCBIData() {
     }
 }
 
-function setupEventListeners() {
-    document.getElementById('design-btn').addEventListener('click', designPrimers);
-    document.getElementById('clear-btn').addEventListener('click', clearForm);
-    document.getElementById('paste-btn').addEventListener('click', pasteFromClipboard);
-    document.getElementById('sample-btn').addEventListener('click', loadSample);
-    document.getElementById('use-ncbi').addEventListener('click', useNCBIData);
-    const useNcbiAndDesign = document.getElementById('use-ncbi-and-design');
-    if (useNcbiAndDesign) useNcbiAndDesign.addEventListener('click', useNCBIDataAndDesign);
-
-    document.getElementById('sequence').addEventListener('input', (e) => {
-        updateSequenceStats(e.target.value);
-        currentSequence = e.target.value;
-    });
-
-    document.getElementById('auto-sync').addEventListener('change', saveSettings);
-    document.getElementById('notifications').addEventListener('change', saveSettings);
-    document.getElementById('auto-design').addEventListener('change', saveSettings);
-    document.getElementById('theme').addEventListener('change', saveSettings);
-    const forceOfflineEl = document.getElementById('force-offline');
-    if (forceOfflineEl) forceOfflineEl.addEventListener('change', saveSettings);
-    const modeToggle = document.getElementById('mode-toggle');
-    if (modeToggle) modeToggle.addEventListener('click', toggleForceOfflineMode);
-
-    window.addEventListener('online', checkNetworkStatus);
-    window.addEventListener('offline', checkNetworkStatus);
-
-    document.getElementById('export-btn').addEventListener('click', exportData);
-    document.getElementById('clear-data-btn').addEventListener('click', clearAllData);
-    document.getElementById('feedback-link').addEventListener('click', openFeedback);
-    document.getElementById('help-link').addEventListener('click', openHelp);
-    const geneSearchBtn = document.getElementById('gene-search-btn');
-    if (geneSearchBtn) geneSearchBtn.addEventListener('click', searchGeneTemplate);
-    const geneSearchInput = document.getElementById('gene-search');
-    if (geneSearchInput) {
-        geneSearchInput.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter') {
-                e.preventDefault();
-                searchGeneTemplate();
-            }
-        });
-    }
-    document.querySelectorAll('.gene-chip').forEach((chip) => {
-        chip.addEventListener('click', async () => {
-            await loadGeneTemplateById(chip.dataset.gene);
-        });
-    });
-    const installerAutoBtn = document.getElementById('installer-auto-btn');
-    if (installerAutoBtn) installerAutoBtn.addEventListener('click', runAutoInstallFlow);
-    const installerVerifyBtn = document.getElementById('installer-verify-btn');
-    if (installerVerifyBtn) installerVerifyBtn.addEventListener('click', verifyInstallation);
-    const installerRemindBtn = document.getElementById('installer-remind-btn');
-    if (installerRemindBtn) {
-        installerRemindBtn.addEventListener('click', async () => {
-            const postponeMs = 24 * 60 * 60 * 1000;
-            await storage.set('primer3InstallPostponeUntil', Date.now() + postponeMs);
-            setInstallerStatus('⏰ Напоминание отложено на 24 часа.');
-        });
-    }
-
-    const saveAdvancedSettings = () => storage.set('advancedSettings', advancedSettings);
-    const debouncedSaveAdvanced = debounce(saveAdvancedSettings, 500);
-    const debouncedUpdateOverlaps = debounce(updateOverlapVisualizationForCurrent, 250);
-
-    const stepSlider = document.getElementById('step-slider');
-    if (stepSlider) {
-        stepSlider.addEventListener('input', (e) => {
-            advancedSettings.stepSize = parseInt(e.target.value, 10);
-            const v = document.getElementById('step-value');
-            if (v) v.textContent = e.target.value;
-            debouncedSaveAdvanced();
-        });
-    }
-    const distanceSlider = document.getElementById('min-distance-slider');
-    if (distanceSlider) {
-        distanceSlider.addEventListener('input', (e) => {
-            advancedSettings.minDistance = parseInt(e.target.value, 10);
-            const v = document.getElementById('min-distance-value');
-            if (v) v.textContent = e.target.value;
-            debouncedSaveAdvanced();
-        });
-    }
-    const minProduct = document.getElementById('min-product-size');
-    const maxProduct = document.getElementById('max-product-size');
-    if (minProduct) {
-        minProduct.addEventListener('change', (e) => {
-            advancedSettings.minProductSize = parseInt(e.target.value, 10);
-            if (advancedSettings.minProductSize > advancedSettings.maxProductSize) {
-                advancedSettings.maxProductSize = advancedSettings.minProductSize + 100;
-                if (maxProduct) maxProduct.value = advancedSettings.maxProductSize;
-            }
-            debouncedSaveAdvanced();
-            updateSidebarKv();
-        });
-    }
-    if (maxProduct) {
-        maxProduct.addEventListener('change', (e) => {
-            advancedSettings.maxProductSize = parseInt(e.target.value, 10);
-            if (advancedSettings.maxProductSize < advancedSettings.minProductSize) {
-                advancedSettings.minProductSize = advancedSettings.maxProductSize - 100;
-                if (minProduct) minProduct.value = advancedSettings.minProductSize;
-            }
-            debouncedSaveAdvanced();
-            updateSidebarKv();
-        });
-    }
-    const mediumMin = document.getElementById('medium-threshold-min');
-    const mediumMax = document.getElementById('medium-threshold-max');
-    if (mediumMin) {
-        mediumMin.addEventListener('input', (e) => {
-            advancedSettings.mediumThresholdMin = parseInt(e.target.value, 10);
-            if (advancedSettings.mediumThresholdMin > advancedSettings.mediumThresholdMax) {
-                advancedSettings.mediumThresholdMax = advancedSettings.mediumThresholdMin;
-                if (mediumMax) mediumMax.value = advancedSettings.mediumThresholdMax;
-            }
-            updateThresholdDisplay();
-            debouncedSaveAdvanced();
-            debouncedUpdateOverlaps();
-        });
-    }
-    if (mediumMax) {
-        mediumMax.addEventListener('input', (e) => {
-            advancedSettings.mediumThresholdMax = parseInt(e.target.value, 10);
-            if (advancedSettings.mediumThresholdMax < advancedSettings.mediumThresholdMin) {
-                advancedSettings.mediumThresholdMin = advancedSettings.mediumThresholdMax;
-                if (mediumMin) mediumMin.value = advancedSettings.mediumThresholdMin;
-            }
-            updateThresholdDisplay();
-            debouncedSaveAdvanced();
-            debouncedUpdateOverlaps();
-        });
-    }
-    const highSlider = document.getElementById('high-threshold-slider');
-    if (highSlider) {
-        highSlider.addEventListener('input', (e) => {
-            advancedSettings.highThreshold = parseInt(e.target.value, 10);
-            updateThresholdDisplay();
-            debouncedSaveAdvanced();
-            debouncedUpdateOverlaps();
-        });
-    }
-    const tmTolSlider = document.getElementById('tm-tolerance-slider');
-    if (tmTolSlider) {
-        tmTolSlider.addEventListener('input', (e) => {
-            advancedSettings.tmTolerance = parseFloat(e.target.value);
-            const v = document.getElementById('tm-tolerance-value');
-            if (v) v.textContent = `±${e.target.value}°C`;
-            debouncedSaveAdvanced();
-            updateSidebarKv();
-        });
-    }
-    const minGcEl = document.getElementById('min-gc');
-    const maxGcEl = document.getElementById('max-gc');
-    if (minGcEl) {
-        minGcEl.addEventListener('change', (e) => {
-            advancedSettings.minGc = parseInt(e.target.value, 10);
-            if (advancedSettings.minGc > advancedSettings.maxGc) {
-                advancedSettings.maxGc = advancedSettings.minGc + 10;
-                if (maxGcEl) maxGcEl.value = advancedSettings.maxGc;
-            }
-            debouncedSaveAdvanced();
-            updateSidebarKv();
-        });
-    }
-    if (maxGcEl) {
-        maxGcEl.addEventListener('change', (e) => {
-            advancedSettings.maxGc = parseInt(e.target.value, 10);
-            if (advancedSettings.maxGc < advancedSettings.minGc) {
-                advancedSettings.minGc = advancedSettings.maxGc - 10;
-                if (minGcEl) minGcEl.value = advancedSettings.minGc;
-            }
-            debouncedSaveAdvanced();
-            updateSidebarKv();
-        });
-    }
-    const checkHairpins = document.getElementById('check-hairpins');
-    const checkDimers = document.getElementById('check-dimers');
-    const checkRepeats = document.getElementById('check-repeats');
-    if (checkHairpins) checkHairpins.addEventListener('change', (e) => { advancedSettings.checkHairpins = e.target.checked; debouncedSaveAdvanced(); });
-    if (checkDimers) checkDimers.addEventListener('change', (e) => { advancedSettings.checkDimers = e.target.checked; debouncedSaveAdvanced(); });
-    if (checkRepeats) checkRepeats.addEventListener('change', (e) => { advancedSettings.checkRepeats = e.target.checked; debouncedSaveAdvanced(); });
-
-    document.querySelectorAll('.preset-btn').forEach(btn => {
-        btn.addEventListener('click', (e) => {
-            applyPreset(e.currentTarget.dataset.preset);
-        });
-    });
-    const savePresetBtn = document.getElementById('save-custom-preset');
-    if (savePresetBtn) {
-        savePresetBtn.addEventListener('click', async () => {
-            const name = prompt('Название пресета (например, \"qPCR_мой\")');
-            if (!name) return;
-            const key = `customPreset_${name.trim()}`;
-            await storage.set(key, { ...advancedSettings });
-            console.log('Сохранён пресет', key);
-        });
-    }
-    const exportBtn = document.getElementById('export-advanced-settings');
-    if (exportBtn) {
-        exportBtn.addEventListener('click', async () => {
-            const json = JSON.stringify(advancedSettings, null, 2);
-            try {
-                await navigator.clipboard.writeText(json);
-                alert('Настройки скопированы в буфер обмена.');
-            } catch {
-                prompt('Скопируйте настройки вручную:', json);
-            }
-        });
-    }
-    const importBtn = document.getElementById('import-advanced-settings');
-    if (importBtn) {
-        importBtn.addEventListener('click', async () => {
-            const json = prompt('Вставьте JSON настроек advancedSettings:');
-            if (!json) return;
-            try {
-                const parsed = JSON.parse(json);
-                Object.assign(advancedSettings, parsed);
-                updateAdvancedSettingsUI();
-                updateNewSettingsUI();
-                await storage.set('advancedSettings', advancedSettings);
-                updateOverlapVisualizationForCurrent();
-            } catch (e) {
-                alert('Не удалось разобрать JSON настроек: ' + (e.message || e));
-            }
-        });
-    }
-
-    const polyxSlider = document.getElementById('polyx-slider');
-    if (polyxSlider) {
-        polyxSlider.addEventListener('input', (e) => {
-            advancedSettings.maxPolyX = parseInt(e.target.value, 10);
-            const v = document.getElementById('polyx-value');
-            if (v) v.textContent = e.target.value;
-            debouncedSaveAdvanced();
-        });
-    }
-    const gradientSlider = document.getElementById('gradient-slider');
-    if (gradientSlider) {
-        gradientSlider.addEventListener('input', (e) => {
-            advancedSettings.temperatureGradient = parseFloat(e.target.value);
-            const v = document.getElementById('gradient-value');
-            if (v) v.textContent = e.target.value;
-            debouncedSaveAdvanced();
-        });
-    }
-    const saltMap = { 'salt-na': 'saltNa', 'salt-mg': 'saltMg', 'salt-dntp': 'saltDntp', 'salt-dna': 'saltDna', 'salt-primer': 'saltPrimer' };
-    Object.keys(saltMap).forEach(id => {
-        const el = document.getElementById(id);
-        if (el) el.addEventListener('change', (e) => {
-            advancedSettings[saltMap[id]] = parseFloat(e.target.value);
-            debouncedSaveAdvanced();
-        });
-    });
-    const excludeAddBtn = document.getElementById('exclude-add-btn');
-    if (excludeAddBtn) {
-        excludeAddBtn.addEventListener('click', () => {
-            const startInput = document.getElementById('exclude-start');
-            const endInput = document.getElementById('exclude-end');
-            const start = parseInt(startInput.value, 10);
-            const end = parseInt(endInput.value, 10);
-            if (isNaN(start) || isNaN(end)) {
-                showNotification('❌ Введите числа для начала и конца региона');
-                return;
-            }
-            const sequenceLength = (currentSequence || '').replace(/\s/g, '').length || 0;
-            const validationErrors = validateExcludeRegion(start, end, sequenceLength);
-            if (validationErrors.length > 0) {
-                showNotification('❌ ' + validationErrors.join('. '));
-                return;
-            }
-            const isDuplicate = advancedSettings.excludeRegions?.some(
-                region => region.start === start && region.end === end
-            );
-            if (isDuplicate) {
-                showNotification('⚠️ Этот регион уже исключен');
-                return;
-            }
-            const hasOverlap = advancedSettings.excludeRegions?.some(region => {
-                const overlap1 = start >= region.start && start < region.end;
-                const overlap2 = end > region.start && end <= region.end;
-                const contains = start <= region.start && end >= region.end;
-                const inside = start >= region.start && end <= region.end;
-                return overlap1 || overlap2 || contains || inside;
-            });
-            if (hasOverlap) {
-                const confirmOverlap = confirm(
-                    '⚠️ Этот регион пересекается с существующим исключенным регионом.\n\nХотите объединить их?'
-                );
-                if (confirmOverlap) {
-                    let newStart = start;
-                    let newEnd = end;
-                    advancedSettings.excludeRegions.forEach(region => {
-                        if (start <= region.end && end >= region.start) {
-                            newStart = Math.min(newStart, region.start);
-                            newEnd = Math.max(newEnd, region.end);
-                        }
-                    });
-                    advancedSettings.excludeRegions = advancedSettings.excludeRegions.filter(
-                        region => !(start <= region.end && end >= region.start)
-                    );
-                    advancedSettings.excludeRegions.push({ start: newStart, end: newEnd });
-                } else {
-                    return;
-                }
-            } else {
-                if (!advancedSettings.excludeRegions) advancedSettings.excludeRegions = [];
-                advancedSettings.excludeRegions.push({ start, end });
-            }
-            advancedSettings.excludeRegions.sort((a, b) => a.start - b.start);
-            updateExcludeRegionsList();
-            startInput.value = '';
-            endInput.value = '';
-            storage.set('advancedSettings', advancedSettings);
-            showNotification('✅ Регион добавлен');
-        });
-    }
-    document.querySelectorAll('.exclude-preset').forEach(btn => {
-        btn.addEventListener('click', (e) => {
-            const preset = e.currentTarget.dataset.preset;
-            const seqLength = (currentSequence || '').replace(/\s/g, '').length || 500;
-            let start, end;
-            switch (preset) {
-                case 'low-complexity':
-                    start = 0;
-                    end = Math.min(50, seqLength);
-                    break;
-                case 'repeats':
-                    start = Math.min(200, Math.max(0, seqLength - 100));
-                    end = Math.min(start + 50, seqLength);
-                    break;
-                case 'snp':
-                    start = Math.min(450, Math.max(0, seqLength - 1));
-                    end = start + 1;
-                    break;
-                default:
-                    start = 0;
-                    end = Math.min(50, seqLength);
-            }
-            document.getElementById('exclude-start').value = start;
-            document.getElementById('exclude-end').value = end;
-            showNotification(`📋 Пресет «${preset}» готов к добавлению`);
-        });
-    });
-    const checkSpecificity = document.getElementById('check-specificity');
-    const specificityOptions = document.getElementById('specificity-options');
-    if (checkSpecificity) {
-        checkSpecificity.addEventListener('change', (e) => {
-            advancedSettings.checkSpecificity = e.target.checked;
-            if (specificityOptions) specificityOptions.style.display = e.target.checked ? 'block' : 'none';
-            debouncedSaveAdvanced();
-        });
-    }
-    document.querySelectorAll('input[name="specificity-level"]').forEach(radio => {
-        radio.addEventListener('change', (e) => {
-            advancedSettings.specificityLevel = e.target.value;
-            debouncedSaveAdvanced();
-        });
-    });
-    const organismSelect = document.getElementById('specificity-organism');
-    if (organismSelect) {
-        organismSelect.addEventListener('change', (e) => {
-            advancedSettings.specificityOrganism = e.target.value;
-            debouncedSaveAdvanced();
-        });
-    }
-
-    const advInputs = document.querySelectorAll('.advanced-settings input, .advanced-settings select');
-    advInputs.forEach(el => {
-        el.addEventListener('change', debouncedSaveAdvanced);
-        el.addEventListener('input', debouncedSaveAdvanced);
-    });
-    document.querySelectorAll('[data-setting-tooltip]').forEach(el => {
-        const key = el.getAttribute('data-setting-tooltip');
-        const tip = getTooltipForSetting(key);
-        if (tip) el.title = tip;
-    });
-
-    const vizZoomValueEl = document.getElementById('viz-zoom-value');
-    const vizZoomSlider = document.getElementById('viz-zoom-slider');
-    const updateVizZoomLabel = () => { if (vizZoomValueEl) vizZoomValueEl.textContent = Math.round(vizZoom * 100) + '%'; };
-    if (vizZoomSlider) {
-        vizZoomSlider.value = String(vizZoom);
-        vizZoomSlider.addEventListener('input', () => {
-            vizZoom = Math.max(0.5, Math.min(10, parseFloat(vizZoomSlider.value) || 1));
-            vizZoomSlider.value = String(vizZoom);
-            updateVizZoomLabel();
-            if (onVizRedraw) onVizRedraw();
-        });
-    }
-}
-
 function setupTabs() {
     const tabs = document.querySelectorAll('.tab');
     tabs.forEach(tab => {
@@ -1128,806 +652,6 @@ function setupTabs() {
         const target = Array.from(tabs).find(t => t.dataset.tab === name);
         if (target) target.click();
     };
-}
-
-async function designPrimers() {
-    const textarea = document.getElementById('sequence');
-    const sequence = textarea.value.trim();
-    const tm = parseFloat(document.getElementById('tm').value);
-    const gc = parseFloat(document.getElementById('gc').value);
-    const length = parseInt(document.getElementById('length').value, 10);
-
-    if (!sequence) {
-        showError('Введите последовательность ДНК');
-        return;
-    }
-
-    const cleaned = sequence.replace(/\s/g, '').toUpperCase();
-    if (cleaned.length < 50) {
-        showError('Минимальная длина последовательности: 50 нуклеотидов');
-        return;
-    }
-    if (cleaned.length < 200) {
-        showWarning(
-            `Последовательность короткая (${cleaned.length} нт). Для получения низкого риска пересечений желательно >300 нт.`
-        );
-    }
-
-    currentSequence = cleaned;
-    showProgress(true);
-
-    try {
-        await storage.set('lastSequence', cleaned);
-
-        const params = { tm, gc, length };
-        let results = null;
-        let serverUnavailable = false;
-        let serverReturnedEmpty = false;
-        const serverAvailable = await checkServerAvailability();
-
-        if (serverAvailable && !(settings.forceOfflineMode || false)) {
-            results = await designWithServer(cleaned, params);
-            if (results && results.length > 0) {
-                results = normalizeResults(results, 'server');
-            } else if (!results) {
-                serverUnavailable = true;
-            } else {
-                serverReturnedEmpty = true;
-            }
-        }
-        if (!results || results.length === 0) {
-            results = designLocally(cleaned, params);
-            results = normalizeResults(results, 'local');
-        }
-
-        currentResults = results;
-        displayResults(results, { serverUnavailable, serverReturnedEmpty });
-
-        await storage.addToHistory({
-            sequence: cleaned,
-            results,
-            timestamp: Date.now()
-        });
-
-        await storage.updateStats({ primersDesigned: (settings.primersDesigned || 0) + 1 });
-    } catch (error) {
-        showError('Ошибка: ' + (error.message || String(error)));
-    } finally {
-        showProgress(false);
-    }
-}
-
-async function designWithServer(sequence, params) {
-    const url = `${API_BASE_URL}/api/design/`;
-    const body = {
-        sequence,
-        tm: params.tm,
-        gc: params.gc,
-        length: params.length
-    };
-    if (advancedSettings.minProductSize != null) body.minProductSize = advancedSettings.minProductSize;
-    if (advancedSettings.maxProductSize != null) body.maxProductSize = advancedSettings.maxProductSize;
-    if (advancedSettings.excludeRegions && advancedSettings.excludeRegions.length > 0) {
-        body.excludeRegions = advancedSettings.excludeRegions;
-    }
-    if (advancedSettings.minGc != null) body.minGc = advancedSettings.minGc;
-    if (advancedSettings.maxGc != null) body.maxGc = advancedSettings.maxGc;
-    if (advancedSettings.tmTolerance != null) body.tmTolerance = advancedSettings.tmTolerance;
-    if (advancedSettings.temperatureGradient != null) body.temperatureGradient = advancedSettings.temperatureGradient;
-    if (typeof console !== 'undefined' && console.log) {
-        const debugPayload = { ...body };
-        if (debugPayload.sequence) debugPayload.sequence = debugPayload.sequence.length + ' нт';
-        console.log('Отправка на сервер (design):', debugPayload);
-    }
-    try {
-        const response = await fetch(url, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(body)
-        });
-
-        if (!response.ok) {
-            console.warn('PrimerDesigner API:', url, 'status', response.status, await response.text().catch(() => ''));
-            return null;
-        }
-
-        const data = await response.json();
-        if (!data.results || !Array.isArray(data.results)) {
-            console.warn('Сервер вернул не массив results:', data);
-            return null;
-        }
-        const seen = new Set();
-        const unique = data.results.filter((r) => {
-            const fwd = r?.forward?.sequence ?? '';
-            const rev = r?.reverse?.sequence ?? '';
-            const key = `${fwd}_${rev}`;
-            if (seen.has(key)) return false;
-            seen.add(key);
-            return true;
-        });
-        if (unique.length !== data.results.length) {
-            console.warn(`Сервер вернул ${data.results.length} пар, уникальных: ${unique.length}`);
-        }
-        return unique;
-    } catch (e) {
-        console.warn('PrimerDesigner API request failed:', url, e);
-        return null;
-    }
-}
-
-async function checkServerAvailability() {
-    if (!navigator.onLine) return false;
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 3000);
-    try {
-        const response = await fetch(`${API_BASE_URL}/api/health/`, {
-            method: 'GET',
-            headers: { 'Content-Type': 'application/json' },
-            signal: controller.signal
-        });
-        if (!response.ok) return false;
-        const data = await response.json().catch(() => ({}));
-        const statusRaw = (data.primer3_service ?? '').toString().toLowerCase();
-        return statusRaw === 'ok';
-    } catch (_error) {
-        return false;
-    } finally {
-        clearTimeout(timeoutId);
-    }
-}
-
-function designLocally(sequence, params) {
-    const results = [];
-    const minLength = 18;
-    const maxLength = 28;
-    const stepFwd = advancedSettings.stepSize || 3;
-    const minDistance = advancedSettings.minDistance || 50;
-    const minProductSize = advancedSettings.minProductSize || 50;
-    const maxProductSize = advancedSettings.maxProductSize || 2000;
-    const excludedRegions = advancedSettings.excludeRegions || [];
-    const maxPolyX = advancedSettings.maxPolyX ?? 4;
-    const tmTolerance = advancedSettings.tmTolerance ?? 3;
-    const temperatureGradient = advancedSettings.temperatureGradient ?? 5;
-    const minGc = advancedSettings.minGc ?? 35;
-    const maxGc = advancedSettings.maxGc ?? 65;
-    const saltParams = {
-        saltNa: advancedSettings.saltNa ?? 50,
-        saltMg: advancedSettings.saltMg ?? 1.5,
-        dntpConc: advancedSettings.saltDntp ?? 0.2,
-        dnaConc: advancedSettings.saltDna ?? 50,
-        primerConc: advancedSettings.saltPrimer ?? 200
-    };
-    const thresholds = {
-        low: advancedSettings.lowThreshold ?? 15,
-        mediumMin: advancedSettings.mediumThresholdMin ?? 15,
-        mediumMax: advancedSettings.mediumThresholdMax ?? 40,
-        high: advancedSettings.highThreshold ?? 40
-    };
-    const checkHairpins = advancedSettings.checkHairpins !== false;
-    const checkDimers = advancedSettings.checkDimers !== false;
-    const checkRepeats = advancedSettings.checkRepeats !== false;
-    const checkSpecificity = !!advancedSettings.checkSpecificity;
-    const maxEvaluations = 6000;
-
-    for (let start = 0; start < sequence.length - minLength && results.length < maxEvaluations; start += stepFwd) {
-        for (let len = minLength; len <= maxLength && results.length < maxEvaluations; len++) {
-            const end = start + len;
-            if (end > sequence.length) continue;
-            const excludeCheck = heuristicEngine.checkExcludedRegions(start, end, excludedRegions);
-            if (!excludeCheck.passed) continue;
-            const fwdSeq = sequence.substring(start, end);
-
-            const minRevStart = start + Math.max(minDistance, minProductSize - maxLength);
-            for (let revStart = minRevStart; revStart < sequence.length - minLength && results.length < maxEvaluations; revStart += stepFwd) {
-                for (let revLen = minLength; revLen <= maxLength; revLen++) {
-                    const revEnd = revStart + revLen;
-                    if (revEnd > sequence.length) continue;
-                    const excludeRev = heuristicEngine.checkExcludedRegions(revStart, revEnd, excludedRegions);
-                    if (!excludeRev.passed) continue;
-                    const productSize = revEnd - start;
-                    if (productSize < minProductSize || productSize > maxProductSize) continue;
-
-                    const revSeq = heuristicEngine.reverseComplement(sequence.substring(revStart, revEnd));
-                    const evaluation = heuristicEngine.evaluatePrimerPair(fwdSeq, revSeq, {
-                        targetTm: params.tm,
-                        productSize,
-                        tmTolerance,
-                        temperatureGradient,
-                        minGc,
-                        maxGc,
-                        maxPolyX,
-                        ...saltParams,
-                        checkHairpins,
-                        checkDimers,
-                        checkRepeats,
-                        checkSpecificity,
-                        specificityLevel: advancedSettings.specificityLevel || 'strict',
-                        specificityOrganism: advancedSettings.specificityOrganism || 'human',
-                        thresholds
-                    });
-
-                    results.push({
-                        id: `local_${results.length}`,
-                        rank: 0,
-                        forward: {
-                            sequence: fwdSeq,
-                            start,
-                            end,
-                            ...evaluation.forward
-                        },
-                        reverse: {
-                            sequence: revSeq,
-                            start: revStart,
-                            end: revEnd,
-                            ...evaluation.reverse
-                        },
-                        totalScore: evaluation.totalScore,
-                        grade: evaluation.grade,
-                        warnings: evaluation.warnings,
-                        recommendations: evaluation.recommendations,
-                        source: 'local',
-                        productSize
-                    });
-                }
-            }
-        }
-    }
-
-    return results
-        .sort((a, b) => b.totalScore - a.totalScore)
-        .slice(0, 10)
-        .map((r, idx) => ({ ...r, id: `local_${idx}`, rank: idx + 1 }));
-}
-
-function displayResults(results, options = {}) {
-    if (!window.displayResultsCounter) window.displayResultsCounter = 0;
-    window.displayResultsCounter += 1;
-    if (typeof console !== 'undefined' && console.log) {
-        console.log(`displayResults вызван #${window.displayResultsCounter}`);
-    }
-
-    const primersEl = document.getElementById('results-primers');
-    const overlapEl = document.getElementById('overlap-dynamic');
-    const connectionWarning = document.getElementById('connection-warning');
-    const warningText = document.querySelector('.connection-warning-text');
-
-    if (connectionWarning) {
-        const showWarning = options.serverUnavailable || options.serverReturnedEmpty;
-        connectionWarning.style.display = showWarning ? 'flex' : 'none';
-        if (showWarning && warningText) {
-            if (options.serverReturnedEmpty) {
-                warningText.innerHTML = 'Сервер не подобрал праймеры по заданным критериям. Показаны результаты локальной эвристики.';
-            } else {
-                warningText.innerHTML = `Сервер не ответил. URL: <code>${API_BASE_URL}</code>. Проверьте: <code>docker compose up</code> и что в консоли расширения нет CORS/сети.`;
-            }
-        }
-    }
-
-    if (!results || results.length === 0) {
-        if (primersEl) primersEl.innerHTML = '<div class="error">Не удалось подобрать праймеры</div>';
-        if (overlapEl) overlapEl.innerHTML = '';
-        const strip0 = document.getElementById('overlap-pagination-strip');
-        if (strip0) strip0.innerHTML = overlapPaginationIdleHtml();
-        setPanelRightAnalysisVisible(false);
-        if (visualizer) visualizer.render('', []);
-        return;
-    }
-
-    const uniquePairs = new Map();
-    results.forEach((r) => {
-        const fwd = r?.forward?.sequence ?? '';
-        const rev = r?.reverse?.sequence ?? '';
-        const fwdStart = r?.forward?.start ?? 0;
-        const revStart = r?.reverse?.start ?? 0;
-        const key = `${fwd}_${rev}_${fwdStart}_${revStart}`;
-        if (!uniquePairs.has(key)) uniquePairs.set(key, r);
-    });
-    if (uniquePairs.size !== results.length) {
-        if (typeof console !== 'undefined' && console.warn) {
-            console.warn(`Обнаружены дубликаты пар: было ${results.length}, уникальных ${uniquePairs.size}`);
-        }
-        results = Array.from(uniquePairs.values());
-        results.sort((a, b) => (b.totalScore ?? 0) - (a.totalScore ?? 0));
-    }
-
-    const forwardGroups = {};
-    results.forEach((pair) => {
-        const fwdSeq = pair?.forward?.sequence ?? '';
-        if (!forwardGroups[fwdSeq]) forwardGroups[fwdSeq] = [];
-        forwardGroups[fwdSeq].push(pair);
-    });
-    if (typeof console !== 'undefined' && console.log) {
-        console.log(`Найдено ${Object.keys(forwardGroups).length} уникальных forward праймеров`);
-        Object.keys(forwardGroups).forEach((fwd) => {
-            const preview = fwd.length > 15 ? `${fwd.substring(0, 15)}...` : fwd;
-            console.log(`  Forward ${preview}: ${forwardGroups[fwd].length} reverse вариантов`);
-        });
-    }
-
-    if (typeof console !== 'undefined' && console.log) {
-        const r0 = results[0];
-        const f = r0?.forward; const rev = r0?.reverse;
-        console.log('=== Сравнение режимов ===');
-        console.log('Режим:', r0?.source);
-        console.log('Forward Tm:', f?.details?.tm?.value);
-        console.log('Reverse Tm:', rev?.details?.tm?.value);
-        console.log('GC%:', f?.details?.gc?.value, '/', rev?.details?.gc?.value);
-        console.log('Оценка:', r0?.totalScore);
-        console.log('Размер продукта:', rev != null && f != null ? (rev.end - f.start) : '—');
-    }
-
-    let htmlPrimers = `
-        <div class="export-panel">
-            <button type="button" class="btn btn-outline btn-small export-btn" data-format="pdf">📄 PDF</button>
-            <button type="button" class="btn btn-outline btn-small export-btn" data-format="excel">📊 Excel</button>
-            <button type="button" class="btn btn-outline btn-small export-btn" data-format="csv">📈 CSV</button>
-            <button type="button" class="btn btn-outline btn-small export-btn" data-format="html">🖨️ HTML</button>
-        </div>
-    `;
-
-    const overlaps = heuristicEngine.analyzeOverlaps(results, {
-        thresholds: {
-            low: advancedSettings.lowThreshold,
-            mediumMin: advancedSettings.mediumThresholdMin,
-            mediumMax: advancedSettings.mediumThresholdMax,
-            high: advancedSettings.highThreshold
-        }
-    });
-
-    const riskExplanationHtml = getRiskExplanationHtml(overlaps, currentSequence?.length ?? 0);
-    if (riskExplanationHtml) {
-        htmlPrimers += riskExplanationHtml;
-    }
-
-    let htmlOverlap = '';
-    let overlapStripHtml = overlapPaginationIdleHtml();
-    if (overlaps.length > 0) {
-        overlapPage = 1;
-        overlapTab = 'all';
-        const overlapLevels = [...new Set(overlaps.map(o => o.conflictLevel))];
-        const tabLabels = { all: 'Все', high: 'Высокий', medium: 'Средний', low: 'Низ' };
-        const tabOrder = ['all', 'high', 'medium', 'low'];
-        const tabsToShow = ['all', ...tabOrder.filter(t => t !== 'all' && overlapLevels.includes(t))];
-        let tabsHtml = '<div class="overlap-tabs">';
-        tabsToShow.forEach(t => {
-            const label = tabLabels[t] || t;
-            const active = t === 'all' ? ' active' : '';
-            tabsHtml += `<button type="button" class="overlap-tab${active}" data-overlap-tab="${t}" aria-pressed="${t === 'all'}">${label}</button>`;
-        });
-        tabsHtml += '</div>';
-        let htmlOverlapScroll = `
-            <div class="overlap-section overlap-section-panel">
-                <p class="overlap-hint">Клик по карточке — выделение на графике</p>
-                ${tabsHtml}
-                <div class="overlap-grid-scroll">
-                <div class="overlap-grid">
-        `;
-
-        overlaps.forEach((o, idx) => {
-            const pageNum = Math.floor(idx / OVERLAP_PER_PAGE) + 1;
-            const charsHtml = buildOverlapCharsInnerHtml(o, idx, results);
-            htmlOverlapScroll += `
-                <div class="overlap-item-wrap" data-overlap-index="${idx}" data-overlap-page="${pageNum}" style="display: none;">
-                    <div class="overlap-card overlap-${o.conflictLevel}" data-overlap-index="${idx}" data-conflict-level="${o.conflictLevel}" role="button" tabindex="0">
-                        <div class="overlap-header">
-                            <span class="overlap-num" aria-label="Номер пересечения">№ ${idx + 1}</span>
-                            <span class="overlap-pairs">
-                                Пара #${getPairNumber(o.pair1_id)} ↔ Пара #${getPairNumber(o.pair2_id)}
-                            </span>
-                            <span class="overlap-badge">${o.overlapLength} п.н.</span>
-                        </div>
-                        <div class="overlap-details">
-                            <div>${formatOverlapType(o.type)}</div>
-                            ${(Array.isArray(o.warning) ? o.warning : (o.warning ? [o.warning] : [])).map(w => `<div class="overlap-warning">${w}</div>`).join('')}
-                        </div>
-                    </div>
-                    <button type="button" class="overlap-chars-toggle" aria-expanded="false">Показать характеристики</button>
-                    <div class="overlap-chars-panel" style="display: none;" aria-hidden="true">${charsHtml}</div>
-                </div>
-            `;
-        });
-
-        htmlOverlapScroll += `
-                </div>
-                </div>
-            </div>`;
-        htmlOverlap = htmlOverlapScroll;
-        const overlapTotalPages = Math.max(1, Math.ceil(overlaps.length / OVERLAP_PER_PAGE));
-        overlapStripHtml = `
-                <div class="pagination-bar overlap-pagination">
-                    <button type="button" class="pagination-btn overlap-pagination-prev" aria-label="Предыдущая страница">← Назад</button>
-                    <span class="pagination-info" id="overlap-pagination-info">Страница 1 из ${overlapTotalPages}</span>
-                    <button type="button" class="pagination-btn overlap-pagination-next" aria-label="Следующая страница">Вперёд →</button>
-                </div>`;
-    }
-
-    const totalPages = Math.max(1, Math.ceil(results.length / PRIMER_RESULTS_PER_PAGE));
-    resultsPage = 1;
-
-    results.forEach((pair, idx) => {
-        const pageNum = Math.floor(idx / PRIMER_RESULTS_PER_PAGE) + 1;
-        const medal = idx === 0 ? '🥇' : idx === 1 ? '🥈' : idx === 2 ? '🥉' : '📌';
-        const gradeColor = pair.grade?.color ?? '#94a3b8';
-        const gradeLetter = pair.grade?.letter ?? '—';
-        const scoreDisplay = pair.totalScore != null && Number.isFinite(pair.totalScore) ? pair.totalScore : '—';
-        const sameForwardAsPrev = idx > 0 && (results[idx - 1].forward?.sequence === pair.forward?.sequence);
-
-        htmlPrimers += `
-            <div class="result-card" data-pair-id="${pair.id}" data-pair-index="${idx}" data-page="${pageNum}" style="display: none;">
-                ${sameForwardAsPrev ? '<div class="same-forward-indicator">↕️ Тот же forward, другой reverse</div>' : ''}
-                <div class="card-header">
-                    <div class="rank">
-                        ${medal} Пара #${idx + 1}
-                    </div>
-                    <div class="grade" style="background: ${gradeColor}20; color: ${gradeColor}">
-                        ${gradeLetter} (${scoreDisplay})
-                    </div>
-                </div>
-
-                <div class="primers">
-                    <div class="primer forward">
-                        <div class="primer-label">
-                            <span>5' → 3'</span>
-                            <span class="primer-pos">${pair.forward.start}-${pair.forward.end}</span>
-                        </div>
-                        <div class="primer-sequence">${formatSequence(pair.forward.sequence)}</div>
-                        <div class="primer-stats">
-                            <span>Tm: ${pair.forward.details?.tm?.value?.toFixed(1) || 'N/A'}°C</span>
-                            <span>GC: ${pair.forward.details?.gc?.value?.toFixed(1) || 'N/A'}%</span>
-                        </div>
-                    </div>
-
-                    <div class="primer reverse">
-                        <div class="primer-label">
-                            <span>3' ← 5'</span>
-                            <span class="primer-pos">${pair.reverse.start}-${pair.reverse.end}</span>
-                        </div>
-                        <div class="primer-sequence">${formatSequence(pair.reverse.sequence)}</div>
-                        <div class="primer-stats">
-                            <span>Tm: ${pair.reverse.details?.tm?.value?.toFixed(1) || 'N/A'}°C</span>
-                            <span>GC: ${pair.reverse.details?.gc?.value?.toFixed(1) || 'N/A'}%</span>
-                        </div>
-                    </div>
-                </div>
-        `;
-
-        if (pair.warnings && pair.warnings.length > 0) {
-            htmlPrimers += '<div class="warnings">';
-            pair.warnings.slice(0, 2).forEach(w => {
-                htmlPrimers += `<div class="warning">⚠️ ${w}</div>`;
-            });
-            htmlPrimers += '</div>';
-        }
-
-        htmlPrimers += `
-                <div class="card-actions">
-                    <button class="action-btn blast-btn" data-pair='${JSON.stringify(pair)}'>
-                        🧬 BLAST
-                    </button>
-                    <button class="action-btn copy-btn" data-seq="${pair.forward.sequence}" data-type="forward">
-                        📋 Fwd
-                    </button>
-                    <button class="action-btn copy-btn" data-seq="${pair.reverse.sequence}" data-type="reverse">
-                        📋 Rev
-                    </button>
-                    <button class="action-btn save-btn" data-pair='${JSON.stringify(pair)}'>
-                        💾 Сохранить
-                    </button>
-                    <button class="action-btn feedback-btn" data-pair='${JSON.stringify(pair)}'>
-                        📝 Отзыв
-                    </button>
-                </div>
-            </div>
-        `;
-    });
-
-    htmlPrimers += `
-        <div class="pagination-bar pagination-results">
-            <button type="button" class="pagination-btn pagination-prev" aria-label="Предыдущая страница">← Назад</button>
-            <span class="pagination-info" id="pagination-info">Страница 1 из ${totalPages}</span>
-            <button type="button" class="pagination-btn pagination-next" aria-label="Следующая страница">Вперёд →</button>
-        </div>`;
-
-    if (primersEl) primersEl.innerHTML = htmlPrimers;
-    if (overlapEl) {
-        overlapEl.innerHTML = htmlOverlap || '<p class="overlap-empty-msg">Пересечений не обнаружено.</p>';
-    }
-    const overlapStrip = document.getElementById('overlap-pagination-strip');
-    if (overlapStrip) overlapStrip.innerHTML = overlapStripHtml;
-    setPanelRightAnalysisVisible(true);
-
-    // Показать первую страницу карточек и повесить пагинацию
-    const showPage = (page) => {
-        const totalP = Math.max(1, Math.ceil(results.length / PRIMER_RESULTS_PER_PAGE));
-        document.querySelectorAll('.result-card').forEach(card => {
-            card.style.display = parseInt(card.dataset.page, 10) === page ? '' : 'none';
-        });
-        const infoEl = document.getElementById('pagination-info');
-        if (infoEl) infoEl.textContent = `Страница ${page} из ${totalP}`;
-        const prevBtn = document.querySelector('.pagination-prev');
-        const nextBtn = document.querySelector('.pagination-next');
-        if (prevBtn) prevBtn.disabled = page <= 1;
-        if (nextBtn) nextBtn.disabled = page >= totalP;
-    };
-    showPage(1);
-
-    document.querySelector('.pagination-prev')?.addEventListener('click', () => {
-        if (resultsPage <= 1) return;
-        resultsPage--;
-        showPage(resultsPage);
-    });
-    document.querySelector('.pagination-next')?.addEventListener('click', () => {
-        const totalP = Math.max(1, Math.ceil(results.length / PRIMER_RESULTS_PER_PAGE));
-        if (resultsPage >= totalP) return;
-        resultsPage++;
-        showPage(resultsPage);
-    });
-
-    if (overlaps.length > 0) {
-        const getIndicesForTab = (tab) => {
-            if (tab === 'all') return overlaps.map((_, i) => i);
-            return overlaps.map((o, i) => o.conflictLevel === tab ? i : -1).filter(i => i >= 0);
-        };
-        const showOverlapPage = (tab, page) => {
-            const indices = getIndicesForTab(tab);
-            const totalP = Math.max(1, Math.ceil(indices.length / OVERLAP_PER_PAGE));
-            const pageIndices = indices.slice((page - 1) * OVERLAP_PER_PAGE, page * OVERLAP_PER_PAGE);
-            const set = new Set(pageIndices);
-            document.querySelectorAll('.overlap-item-wrap').forEach(wrap => {
-                const idx = parseInt(wrap.dataset.overlapIndex, 10);
-                const show = set.has(idx);
-                wrap.style.display = show ? '' : 'none';
-                if (!show) {
-                    const panel = wrap.querySelector('.overlap-chars-panel');
-                    const toggle = wrap.querySelector('.overlap-chars-toggle');
-                    if (panel && toggle) {
-                        panel.style.display = 'none';
-                        panel.setAttribute('aria-hidden', 'true');
-                        toggle.textContent = 'Показать характеристики';
-                        toggle.setAttribute('aria-expanded', 'false');
-                    }
-                }
-            });
-            const infoEl = document.getElementById('overlap-pagination-info');
-            if (infoEl) infoEl.textContent = `Страница ${page} из ${totalP}`;
-            const prevBtn = document.querySelector('.overlap-pagination-prev');
-            const nextBtn = document.querySelector('.overlap-pagination-next');
-            if (prevBtn) prevBtn.disabled = page <= 1;
-            if (nextBtn) nextBtn.disabled = page >= totalP;
-        };
-        showOverlapPage(overlapTab, 1);
-        document.querySelectorAll('.overlap-tab').forEach(btn => {
-            btn.addEventListener('click', () => {
-                const tab = btn.dataset.overlapTab;
-                overlapTab = tab;
-                overlapPage = 1;
-                document.querySelectorAll('.overlap-tab').forEach(b => {
-                    b.classList.toggle('active', b.dataset.overlapTab === tab);
-                    b.setAttribute('aria-pressed', b.dataset.overlapTab === tab);
-                });
-                showOverlapPage(overlapTab, overlapPage);
-            });
-        });
-        document.querySelector('.overlap-pagination-prev')?.addEventListener('click', () => {
-            if (overlapPage <= 1) return;
-            overlapPage--;
-            showOverlapPage(overlapTab, overlapPage);
-        });
-        document.querySelector('.overlap-pagination-next')?.addEventListener('click', () => {
-            const indices = getIndicesForTab(overlapTab);
-            const totalP = Math.max(1, Math.ceil(indices.length / OVERLAP_PER_PAGE));
-            if (overlapPage >= totalP) return;
-            overlapPage++;
-            showOverlapPage(overlapTab, overlapPage);
-        });
-    }
-
-    const vizZoomValueEl = document.getElementById('viz-zoom-value');
-    const vizZoomSlider = document.getElementById('viz-zoom-slider');
-    if (vizZoomValueEl) vizZoomValueEl.textContent = Math.round(vizZoom * 100) + '%';
-    if (vizZoomSlider) vizZoomSlider.value = String(vizZoom);
-
-    if (visualizer && currentSequence) {
-        const seq = currentSequence.replace(/\s/g, '');
-        visualizer.render(seq, results, -1, vizZoom);
-        if (overlaps.length > 0 && visualizer.canvas) {
-            const overlapViz = new OverlapVisualizer(visualizer.canvas);
-            overlapViz.drawOverlaps(overlaps, seq.length);
-        }
-    }
-
-    const renderVisualization = (highlightedPairIndex = -1, overlapHighlightIndex = -1) => {
-        if (!visualizer || !currentSequence) return;
-        const seq = currentSequence.replace(/\s/g, '');
-        visualizer.render(seq, results, highlightedPairIndex, vizZoom);
-        if (overlaps.length > 0 && visualizer.canvas) {
-            const ov = new OverlapVisualizer(visualizer.canvas);
-            ov.drawOverlaps(overlaps, seq.length, overlapHighlightIndex);
-        }
-    };
-
-    setVizRedraw(() => {
-        const pairIdx = document.querySelector('.result-card.result-card-highlighted')?.dataset.pairIndex;
-        const overlapIdx = document.querySelector('.overlap-card.highlighted')?.dataset.overlapIndex;
-        renderVisualization(pairIdx != null ? parseInt(pairIdx, 10) : -1, overlapIdx != null ? parseInt(overlapIdx, 10) : -1);
-        scrollVizToCenter();
-    });
-
-    document.querySelectorAll('.result-card').forEach((card) => {
-        card.addEventListener('click', (e) => {
-            if (e.target.closest('.action-btn')) return;
-            const pairIndex = parseInt(card.dataset.pairIndex, 10);
-            if (isNaN(pairIndex)) return;
-            document.querySelectorAll('.result-card').forEach((c) => c.classList.remove('result-card-highlighted'));
-            card.classList.add('result-card-highlighted');
-            document.querySelectorAll('.overlap-card').forEach(c => c.classList.remove('highlighted'));
-            document.getElementById('visualization')?.classList.remove('visualization-overlap-highlighted');
-            renderVisualization(pairIndex, -1);
-        });
-    });
-
-    // Клик по карточке пересечения: выделение на графике + тултип с характеристиками
-    if (overlaps.length > 0 && visualizer && currentSequence) {
-        const seq = currentSequence.replace(/\s/g, '');
-        const renderHighlight = (highlightIndex) => {
-            const pairIdx = document.querySelector('.result-card.result-card-highlighted')?.dataset.pairIndex;
-            const parsed = pairIdx != null ? parseInt(pairIdx, 10) : -1;
-            renderVisualization(parsed >= 0 ? parsed : -1, highlightIndex);
-        };
-        document.querySelectorAll('.overlap-chars-toggle').forEach(toggle => {
-            toggle.addEventListener('click', (e) => {
-                e.stopPropagation();
-                const wrap = toggle.closest('.overlap-item-wrap');
-                const panel = wrap?.querySelector('.overlap-chars-panel');
-                if (!panel) return;
-                const opening = panel.style.display === 'none' || !panel.style.display;
-                document.querySelectorAll('.overlap-item-wrap').forEach(w => {
-                    if (w.style.display === 'none') return;
-                    const p = w.querySelector('.overlap-chars-panel');
-                    const t = w.querySelector('.overlap-chars-toggle');
-                    if (p && t && w !== wrap) {
-                        p.style.display = 'none';
-                        p.setAttribute('aria-hidden', 'true');
-                        t.textContent = 'Показать характеристики';
-                        t.setAttribute('aria-expanded', 'false');
-                    }
-                });
-                if (opening) {
-                    panel.style.display = 'block';
-                    panel.setAttribute('aria-hidden', 'false');
-                    toggle.textContent = 'Скрыть характеристики';
-                    toggle.setAttribute('aria-expanded', 'true');
-                } else {
-                    panel.style.display = 'none';
-                    panel.setAttribute('aria-hidden', 'true');
-                    toggle.textContent = 'Показать характеристики';
-                    toggle.setAttribute('aria-expanded', 'false');
-                }
-            });
-        });
-        document.querySelectorAll('.overlap-card').forEach(card => {
-            card.addEventListener('click', () => {
-                const idx = parseInt(card.dataset.overlapIndex, 10);
-                if (isNaN(idx) || idx < 0) return;
-                document.querySelectorAll('.overlap-card').forEach(c => c.classList.remove('highlighted'));
-                card.classList.add('highlighted');
-                renderHighlight(idx);
-                const vizEl = document.getElementById('visualization');
-                if (vizEl) {
-                    vizEl.classList.add('visualization-overlap-highlighted');
-                    vizEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-                }
-            });
-            card.addEventListener('keydown', (e) => {
-                if (e.key === 'Enter' || e.key === ' ') {
-                    e.preventDefault();
-                    card.click();
-                }
-            });
-        });
-    }
-
-    // Добавляем обработчики для кнопок
-    document.querySelectorAll('.copy-btn').forEach(btn => {
-        btn.addEventListener('click', (e) => {
-            const seq = e.currentTarget.dataset.seq;
-            navigator.clipboard.writeText(seq);
-
-            const original = e.currentTarget.textContent;
-            e.currentTarget.textContent = '✓ Скопировано';
-            setTimeout(() => {
-                e.currentTarget.textContent = original;
-            }, 1000);
-        });
-    });
-
-    document.querySelectorAll('.save-btn').forEach(btn => {
-        btn.addEventListener('click', (e) => {
-            const pair = JSON.parse(e.currentTarget.dataset.pair);
-            savePrimer(pair);
-        });
-    });
-
-    document.querySelectorAll('.feedback-btn').forEach(btn => {
-        btn.addEventListener('click', (e) => {
-            const pair = JSON.parse(e.currentTarget.dataset.pair);
-            openFeedbackForPair(pair);
-        });
-    });
-    document.querySelectorAll('.blast-btn').forEach(btn => {
-        btn.addEventListener('click', async (e) => {
-            const pair = JSON.parse(e.currentTarget.dataset.pair);
-            await showBlastResults(pair);
-        });
-    });
-    document.querySelectorAll('.export-btn').forEach((btn) => {
-        btn.addEventListener('click', (e) => {
-            const format = e.currentTarget.dataset.format;
-            if (!currentResults || currentResults.length === 0) {
-                showWarning('Нет результатов для экспорта');
-                return;
-            }
-            try {
-                if (format === 'pdf') exportService.exportToPDF(currentResults);
-                else if (format === 'excel') exportService.exportToExcel(currentResults);
-                else if (format === 'csv') exportService.exportToCSV(currentResults);
-                else if (format === 'html') exportService.exportToHTML(currentResults);
-                showNotification(`✅ Экспорт: ${format.toUpperCase()}`);
-            } catch (err) {
-                showError(`Ошибка экспорта: ${err.message || err}`);
-            }
-        });
-    });
-}
-
-async function showBlastResults(pair) {
-    const organism = advancedSettings.specificityOrganism || 'human';
-    showNotification('🧬 BLAST проверка запущена...');
-    try {
-        const fwd = await blastService.checkPrimerSpecificity(pair.forward.sequence, { organism });
-        const rev = await blastService.checkPrimerSpecificity(pair.reverse.sequence, { organism });
-        renderBlastModal(pair, fwd, rev);
-    } catch (error) {
-        showWarning(`BLAST недоступен: ${error.message || error}`);
-        chrome.tabs.create({ url: blastService.getBlastSearchUrl(pair.forward.sequence) });
-    }
-}
-
-function renderBlastAnalysis(label, result) {
-    return `
-        <div class="blast-primer-box">
-            <h4>${label}</h4>
-            <div class="blast-badge ${result.offTargetHits === 0 ? 'good' : 'warn'}">${result.offTargetHits} нецелевых совпадений</div>
-            ${result.highRisk.length ? `<div class="blast-risk high"><strong>Высокий риск</strong>${result.highRisk.slice(0, 5).map(h => `<div>${h.description} (${h.identity.toFixed(1)}%)</div>`).join('')}</div>` : ''}
-            ${result.mediumRisk.length ? `<div class="blast-risk medium"><strong>Средний риск</strong>${result.mediumRisk.slice(0, 5).map(h => `<div>${h.description} (${h.identity.toFixed(1)}%)</div>`).join('')}</div>` : ''}
-        </div>
-    `;
-}
-
-function renderBlastModal(pair, fwd, rev) {
-    const modal = document.createElement('div');
-    modal.className = 'blast-modal';
-    modal.innerHTML = `
-        <div class="blast-modal-content">
-            <h3>🧬 BLAST: Пара #${getPairNumber(pair.id)}</h3>
-            <div class="blast-two-col">
-                ${renderBlastAnalysis(`Forward: ${formatSequence(pair.forward.sequence)}`, fwd)}
-                ${renderBlastAnalysis(`Reverse: ${formatSequence(pair.reverse.sequence)}`, rev)}
-            </div>
-            <div class="blast-actions">
-                <button class="btn btn-outline blast-open-ncbi">Открыть NCBI BLAST</button>
-                <button class="btn btn-primary blast-close">Закрыть</button>
-            </div>
-        </div>
-    `;
-    document.body.appendChild(modal);
-    modal.querySelector('.blast-close')?.addEventListener('click', () => modal.remove());
-    modal.querySelector('.blast-open-ncbi')?.addEventListener('click', () => {
-        chrome.tabs.create({ url: blastService.getBlastSearchUrl(pair.forward.sequence) });
-    });
-    modal.addEventListener('click', (e) => {
-        if (e.target === modal) modal.remove();
-    });
 }
 
 async function loadGeneTemplateById(geneId) {
@@ -2004,7 +728,9 @@ async function loadSavedPrimers() {
         container.innerHTML = `
             <div class="empty-state">
                 <span class="empty-icon">📭</span>
-                <p>Нет сохраненных праймеров</p>
+                <p>Нет сохранённых праймеров</p>
+                <p class="saved-empty-hint">Сохранение — на вкладке <strong>Дизайн</strong>: после подбора праймеров у каждой пары нажмите <strong>💾 Сохранить</strong> в блоке результатов (центр).</p>
+                <button type="button" class="btn btn-small btn-primary" onclick="switchTab('design')">Перейти к дизайну</button>
             </div>
         `;
         return;
@@ -2040,38 +766,7 @@ async function loadSavedPrimers() {
 }
 
 async function loadHistory() {
-    const history = await storage.get('history') || [];
-    const container = document.getElementById('history-list');
-
-    if (history.length === 0) {
-        container.innerHTML = `
-            <div class="empty-state">
-                <span class="empty-icon">📜</span>
-                <p>История пуста</p>
-            </div>
-        `;
-        return;
-    }
-
-    let html = '';
-    history.forEach(item => {
-        const date = new Date(item.timestamp).toLocaleString();
-        html += `
-            <div class="saved-item">
-                <div class="saved-header">
-                    <span class="saved-name">${date}</span>
-                </div>
-                <div class="saved-preview">
-                    <div class="saved-seqs">
-                        <div class="saved-seq">Длина: ${item.sequence.length} нуклеотидов</div>
-                        <div class="saved-seq">Пар: ${item.results?.length || 0}</div>
-                    </div>
-                </div>
-            </div>
-        `;
-    });
-
-    container.innerHTML = html;
+    await refreshHistoryView();
 }
 
 function updateSequenceStats(sequence) {
@@ -2128,142 +823,6 @@ function showWarning(message) {
     setTimeout(() => notification.remove(), 4500);
 }
 
-function formatSequence(seq) {
-    if (seq.length <= 25) return seq;
-    return seq.substring(0, 20) + '...' + seq.slice(-5);
-}
-
-function getRiskExplanationHtml(overlaps, seqLength) {
-    if (!overlaps || overlaps.length === 0 || seqLength >= 200) return '';
-    const highRiskCount = overlaps.filter((o) => o.conflictLevel === 'high').length;
-    if (highRiskCount !== overlaps.length) return '';
-    return `
-        <div class="risk-explanation" role="alert">
-            ⚠️ Все пересечения высокого риска из-за короткой последовательности.
-            Для получения вариативных результатов используйте последовательность &gt;300 нт.
-        </div>`;
-}
-
-function formatOverlapType(type) {
-    const types = {
-        'forward_forward': 'Прямой-Прямой',
-        'forward_reverse': 'Прямой-Обратный',
-        'reverse_reverse': 'Обратный-Обратный',
-        'product_overlap': 'Перекрытие продуктов'
-    };
-    return types[type] || type;
-}
-
-/** Карточка пары для панели пересечения (как в списке результатов, компактно). */
-function buildOverlapEmbeddedPairHtml(pair, idx) {
-    if (!pair?.forward || !pair?.reverse) {
-        return '<div class="overlap-embed-pair overlap-embed-missing">Пара не найдена в текущих результатах.</div>';
-    }
-    const medal = idx === 0 ? '🥇' : idx === 1 ? '🥈' : idx === 2 ? '🥉' : '📌';
-    const gradeColor = pair.grade?.color ?? '#94a3b8';
-    const gradeLetter = pair.grade?.letter ?? '—';
-    const scoreDisplay = pair.totalScore != null && Number.isFinite(pair.totalScore) ? pair.totalScore : '—';
-    const pf = pair.forward;
-    const pr = pair.reverse;
-    let warnBlock = '';
-    if (pair.warnings && pair.warnings.length > 0) {
-        warnBlock = '<div class="warnings">';
-        pair.warnings.slice(0, 2).forEach((w) => {
-            warnBlock += `<div class="warning">⚠️ ${String(w).replace(/</g, '&lt;')}</div>`;
-        });
-        warnBlock += '</div>';
-    }
-    const pairJson = JSON.stringify(pair);
-    return `
-                <div class="overlap-embed-pair">
-                    <div class="card-header">
-                        <div class="rank">${medal} Пара #${idx + 1}</div>
-                        <div class="grade" style="background: ${gradeColor}20; color: ${gradeColor}">${gradeLetter} (${scoreDisplay})</div>
-                    </div>
-                    <div class="primers">
-                        <div class="primer forward">
-                            <div class="primer-label">
-                                <span>5' → 3'</span>
-                                <span class="primer-pos">${pf.start}-${pf.end}</span>
-                            </div>
-                            <div class="primer-sequence">${formatSequence(pf.sequence)}</div>
-                            <div class="primer-stats">
-                                <span>Tm: ${pf.details?.tm?.value?.toFixed(1) || 'N/A'}°C</span>
-                                <span>GC: ${pf.details?.gc?.value?.toFixed(1) || 'N/A'}%</span>
-                            </div>
-                        </div>
-                        <div class="primer reverse">
-                            <div class="primer-label">
-                                <span>3' ← 5'</span>
-                                <span class="primer-pos">${pr.start}-${pr.end}</span>
-                            </div>
-                            <div class="primer-sequence">${formatSequence(pr.sequence)}</div>
-                            <div class="primer-stats">
-                                <span>Tm: ${pr.details?.tm?.value?.toFixed(1) || 'N/A'}°C</span>
-                                <span>GC: ${pr.details?.gc?.value?.toFixed(1) || 'N/A'}%</span>
-                            </div>
-                        </div>
-                    </div>
-                    ${warnBlock}
-                    <div class="card-actions">
-                        <button type="button" class="action-btn copy-btn" data-seq="${pf.sequence}" data-type="forward">📋 Fwd</button>
-                        <button type="button" class="action-btn copy-btn" data-seq="${pr.sequence}" data-type="reverse">📋 Rev</button>
-                        <button type="button" class="action-btn save-btn" data-pair='${pairJson}'>
-                            💾 Сохранить
-                        </button>
-                        <button type="button" class="action-btn feedback-btn" data-pair='${pairJson}'>
-                            📝 Отзыв
-                        </button>
-                    </div>
-                </div>`;
-}
-
-/** Полный блок «Характеристики пересечения» + справа карточки обеих пар. */
-function buildOverlapCharsInnerHtml(o, overlapIndex, results) {
-    const warnings = Array.isArray(o.warning) ? o.warning : (o.warning ? [o.warning] : []);
-    const conflictLabels = { low: 'Низкий', medium: 'Средний', high: 'Высокий' };
-    const num = overlapIndex + 1;
-    const res = Array.isArray(results) ? results : [];
-    const i1 = res.findIndex((p) => p.id === o.pair1_id);
-    const i2 = res.findIndex((p) => p.id === o.pair2_id);
-    const p1 = i1 >= 0 ? res[i1] : null;
-    const p2 = i2 >= 0 ? res[i2] : null;
-    const embed1 = buildOverlapEmbeddedPairHtml(p1, i1 >= 0 ? i1 : 0);
-    const embed2 = buildOverlapEmbeddedPairHtml(p2, i2 >= 0 ? i2 : 0);
-    const detailCol = `
-                    <div class="overlap-chars-col-detail">
-                        <div class="overlap-detail-inner">
-                            <h4>Характеристики пересечения № ${num}</h4>
-                            <ul class="overlap-detail-list">
-                                <li><strong>Пары:</strong> #${getPairNumber(o.pair1_id)} ↔ #${getPairNumber(o.pair2_id)}</li>
-                                <li><strong>Тип:</strong> ${formatOverlapType(o.type)}</li>
-                                <li><strong>Позиция:</strong> ${o.overlapStart}–${o.overlapEnd} (${o.overlapLength} п.н.)</li>
-                                <li><strong>Уровень конфликта:</strong> ${conflictLabels[o.conflictLevel] || o.conflictLevel}</li>
-                                ${o.percentOfFirst != null ? `<li><strong>% от 1-го праймера:</strong> ${o.percentOfFirst}%</li>` : ''}
-                                ${o.percentOfSecond != null ? `<li><strong>% от 2-го праймера:</strong> ${o.percentOfSecond}%</li>` : ''}
-                                ${(o.complementaryRisk?.hasComplementarity) ? `<li class="warning">Комплементарность в перекрытии: ${o.complementaryRisk.matchPercent}%</li>` : ''}
-                            </ul>
-                        </div>
-                    </div>`;
-    const pairsBlock = `
-                    <div class="overlap-chars-pairs-block" aria-label="Пары в пересечении">
-                        <div class="overlap-embed-pair-label">Участвующие пары</div>
-                        <div class="overlap-chars-pairs-flex">
-                            ${embed1}
-                            ${embed2}
-                        </div>
-                    </div>`;
-    const warnFull = warnings.length
-        ? `<div class="overlap-detail-warnings overlap-chars-warnings-full">${warnings.map((w) => `<div class="overlap-warning">${w}</div>`).join('')}</div>`
-        : '';
-    return `
-                <div class="overlap-chars-layout">
-                    ${detailCol}
-                    ${pairsBlock}
-                </div>
-                ${warnFull}`;
-}
-
 async function clearForm() {
     document.getElementById('sequence').value = '';
     const rp = document.getElementById('results-primers');
@@ -2316,8 +875,8 @@ async function useNCBIData() {
 
 async function useNCBIDataAndDesign() {
     await useNCBIData();
-    if (currentSequence && currentSequence.length >= 50) {
-        designPrimers();
+    if (currentSequence && currentSequence.length >= 50 && designHandlers) {
+        designHandlers.designPrimers();
     }
 }
 
