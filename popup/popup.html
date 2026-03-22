@@ -39,11 +39,14 @@
                 <button type="button" class="status-mode-toggle btn btn-small btn-outline" id="mode-toggle" title="Переключить режим расчёта">Переключить на локально</button>
             </div>
         </header>
+        <div class="navigation-bar" id="navigation-bar" hidden>
+            <button type="button" class="btn btn-small btn-outline" id="nav-back-btn">← Назад к дизайну</button>
+        </div>
         <div class="app-shell">
         <aside class="layout-sidebar">
             <nav class="sidebar-nav" role="tablist">
                 <button type="button" class="tab active" data-tab="design">Дизайн</button>
-                <button type="button" class="tab" data-tab="saved">Сохраненные</button>
+                <button type="button" class="tab" data-tab="saved">Избранное</button>
                 <button type="button" class="tab" data-tab="history">История</button>
                 <button type="button" class="tab" data-tab="settings">Настройки</button>
             </nav>
@@ -161,29 +164,33 @@
                             </div>
                         </div>
 
-                        <div class="advanced-checkboxes" data-mode="local">
+                        <div class="advanced-checkboxes" data-mode="both">
                             <label class="checkbox">
                                 <input type="checkbox" id="check-hairpins" checked>
                                 <span>Проверять шпильки</span>
-                                <span class="setting-badge local-badge" title="Только в локальном режиме">💻 Локально</span>
+                                <span class="setting-badge server-badge" title="Учитывается на сервере (Primer3)">☁️ Сервер</span>
+                                <span class="setting-badge local-badge" title="И в локальной эвристике">💻 Локально</span>
                             </label>
                             <label class="checkbox">
                                 <input type="checkbox" id="check-dimers" checked>
                                 <span>Проверять димеры</span>
-                                <span class="setting-badge local-badge" title="Только в локальном режиме">💻 Локально</span>
+                                <span class="setting-badge server-badge" title="Учитывается на сервере (Primer3)">☁️ Сервер</span>
+                                <span class="setting-badge local-badge" title="И в локальной эвристике">💻 Локально</span>
                             </label>
                             <label class="checkbox">
                                 <input type="checkbox" id="check-repeats" checked>
                                 <span>Проверять повторы</span>
-                                <span class="setting-badge local-badge" title="Только в локальном режиме">💻 Локально</span>
+                                <span class="setting-badge server-badge" title="Учитывается на сервере (Primer3)">☁️ Сервер</span>
+                                <span class="setting-badge local-badge" title="И в локальной эвристике">💻 Локально</span>
                             </label>
                         </div>
 
-                        <div class="polyx-group" data-mode="local">
+                        <div class="polyx-group" data-mode="both">
                             <label class="slider-label">
                                 Макс. длина поли-X участка:
                                 <span id="polyx-value" class="slider-value">4</span> нуклеотидов
-                                <span class="setting-badge local-badge" title="Только в локальном режиме">💻 Локально</span>
+                                <span class="setting-badge server-badge" title="Учитывается на сервере (Primer3)">☁️ Сервер</span>
+                                <span class="setting-badge local-badge" title="И в локальной эвристике">💻 Локально</span>
                             </label>
                             <input type="range" id="polyx-slider" class="slider"
                                    min="3" max="8" value="4" step="1">
@@ -305,6 +312,9 @@
                                         <span class="badge">Допуск Tm</span>
                                         <span class="badge">Градиент</span>
                                         <span class="badge">Исключённые регионы</span>
+                                        <span class="badge">Шпильки/димеры</span>
+                                        <span class="badge">Поли-X</span>
+                                        <span class="badge">Концентрация солей</span>
                                     </span>
                                 </div>
                                 <div class="summary-item" data-mode="local">
@@ -314,10 +324,7 @@
                                         <span class="badge local">Шаг поиска</span>
                                         <span class="badge local">Мин. расстояние</span>
                                         <span class="badge local">Пороги риска</span>
-                                        <span class="badge local">Поли-X</span>
-                                        <span class="badge local">Концентрация солей</span>
-                                        <span class="badge local">Шпильки/димеры</span>
-                                        <span class="badge local">Специфичность</span>
+                                        <span class="badge local">Специфичность (BLAST)</span>
                                     </span>
                                 </div>
                             </div>
@@ -456,14 +463,85 @@
         </div>
 
         <div class="tab-pane" id="tab-saved">
-            <div class="saved-list" id="saved-list">
-                <div class="empty-state">
-                    <span class="empty-icon">📭</span>
-                    <p>Нет сохранённых праймеров</p>
-                    <p class="saved-empty-hint">Сохранение — на вкладке <strong>Дизайн</strong>: после «Подобрать праймеры» у каждой пары в центральной колонке есть кнопка <strong>💾 Сохранить</strong> (рядом с BLAST и копированием последовательностей).</p>
-                    <button type="button" class="btn btn-small btn-primary" onclick="switchTab('design')">
-                        Перейти к дизайну
-                    </button>
+            <div id="saved-toolbar" class="saved-toolbar" style="display:none">
+                <div class="saved-filters">
+                    <input type="search" id="saved-search" placeholder="🔍 Поиск по названию, последовательности…" autocomplete="off">
+                    <select id="saved-group-by" aria-label="Группировка">
+                        <option value="none">Без группировки</option>
+                        <option value="sequence">По последовательности</option>
+                        <option value="gene">По гену (эвристика)</option>
+                        <option value="score">По оценке</option>
+                        <option value="date">По дате</option>
+                    </select>
+                    <select id="saved-sort" aria-label="Сортировка">
+                        <option value="date-desc">Новые сначала</option>
+                        <option value="score-desc">По оценке ↓</option>
+                        <option value="name-asc">По названию</option>
+                    </select>
+                </div>
+                <div class="saved-toolbar-actions">
+                    <button type="button" id="saved-export-folder" class="btn btn-small btn-outline" style="display:none" title="Экспорт JSON только записей текущей папки">📤 Папка (JSON)</button>
+                    <button type="button" id="saved-export" class="btn btn-small btn-outline" title="Скачать JSON со всеми элементами избранного">📤 Экспортировать всё</button>
+                    <button type="button" id="saved-compare" class="btn btn-small btn-outline" title="Сравнить две лучшие последовательности из истории дизайнов">🔬 Сравнить (история)</button>
+                    <button type="button" id="saved-clear-all" class="btn btn-small btn-outline saved-clear-all-btn" title="Удалить все элементы из избранного на этом устройстве">🗑️ Очистить всё</button>
+                </div>
+            </div>
+            <div id="saved-stats" class="saved-stats-bar" style="display:none"></div>
+            <div class="saved-body" id="saved-body">
+                <aside class="saved-folder-sidebar" id="saved-folder-sidebar" style="display:none" aria-label="Папки избранного">
+                    <div class="favorites-folder-panel">
+                        <div class="folder-panel-header">
+                            <span class="folder-panel-title">📁 Папки</span>
+                            <button type="button" class="btn btn-small btn-outline" id="new-folder-root-btn" title="Новая папка в корне">➕</button>
+                        </div>
+                        <div class="folder-tree" id="folder-tree" role="tree"></div>
+                    </div>
+                </aside>
+                <div class="saved-list saved-list-scroll" id="saved-list">
+                    <div class="saved-empty-state">
+                        <div class="empty-state">
+                            <span class="empty-icon">📭</span>
+                            <p>В избранном пока ничего нет</p>
+                            <p class="history-empty-hint">На вкладке «Дизайн» после подбора праймеров нажмите ⭐ В избранное у нужной пары — элементы появятся здесь.</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div id="folder-modal-overlay" class="folder-modal-overlay pd-modal-overlay" hidden>
+            <div class="folder-modal-content pd-modal" role="dialog" aria-modal="true" aria-labelledby="folder-modal-title">
+                <button type="button" class="folder-modal-close pd-modal-close" id="folder-modal-close" aria-label="Закрыть">×</button>
+                <h3 class="pd-modal-title" id="folder-modal-title">Новая папка</h3>
+                <input type="hidden" id="folder-modal-mode" value="create">
+                <input type="hidden" id="folder-modal-target-id" value="">
+                <input type="hidden" id="folder-modal-parent-id" value="root">
+                <label class="pd-field" for="folder-modal-name"><span>Название</span></label>
+                <input type="text" id="folder-modal-name" class="folder-modal-input" placeholder="Например: qPCR проект" maxlength="120">
+                <label class="pd-field" for="folder-modal-desc"><span>Описание</span></label>
+                <textarea id="folder-modal-desc" rows="2" placeholder="Кратко: цель эксперимента…" maxlength="500"></textarea>
+                <label class="pd-field" for="folder-modal-color"><span>Цвет метки</span></label>
+                <select id="folder-modal-color">
+                    <option value="#3b82f6">Синий</option>
+                    <option value="#22c55e">Зелёный</option>
+                    <option value="#eab308">Жёлтый</option>
+                    <option value="#ef4444">Красный</option>
+                    <option value="#8b5cf6">Фиолетовый</option>
+                    <option value="#ec4899">Розовый</option>
+                </select>
+                <label class="pd-field" for="folder-modal-icon"><span>Иконка</span></label>
+                <select id="folder-modal-icon">
+                    <option value="📁">📁 Папка</option>
+                    <option value="🧬">🧬 Генетика</option>
+                    <option value="🔬">🔬 Лаборатория</option>
+                    <option value="🧪">🧪 Пробирка</option>
+                    <option value="📊">📊 Данные</option>
+                    <option value="📝">📝 Заметки</option>
+                    <option value="⭐">⭐ Важное</option>
+                </select>
+                <div class="pd-modal-actions">
+                    <button type="button" class="btn btn-outline" id="folder-modal-cancel">Отмена</button>
+                    <button type="button" class="btn btn-primary" id="folder-modal-save">Сохранить</button>
                 </div>
             </div>
         </div>
@@ -478,12 +556,20 @@
             </div>
             <div id="history-toolbar" class="history-toolbar" style="display:none">
                 <div class="history-filters">
-                    <input type="search" id="history-search" placeholder="🔍 Поиск по последовательности, оценке…" autocomplete="off">
+                    <input type="search" id="history-search" placeholder="🔍 Поиск по последовательности, гену, оценке…" autocomplete="off">
+                    <select id="history-group-by" aria-label="Группировка">
+                        <option value="flat">Плоский список (по датам)</option>
+                        <option value="sequence">Группы по последовательности</option>
+                        <option value="date">Группы по дню</option>
+                        <option value="gene">Группы по гену (эвристика)</option>
+                    </select>
                     <select id="history-sort" aria-label="Сортировка">
                         <option value="date-desc">Новые сначала</option>
                         <option value="date-asc">Старые сначала</option>
-                        <option value="score">По оценке</option>
+                        <option value="score-desc">По оценке</option>
                         <option value="length">По длине последовательности</option>
+                        <option value="best-score">По лучшей оценке (группы)</option>
+                        <option value="most-pairs">По числу пар (группы)</option>
                     </select>
                     <select id="history-date-range" aria-label="Период">
                         <option value="all">Все даты</option>
@@ -494,12 +580,12 @@
                     </select>
                 </div>
                 <div class="history-actions-bar">
-                    <button type="button" id="history-export" class="btn btn-small btn-outline">Экспорт JSON</button>
-                    <button type="button" id="history-clear" class="btn btn-small btn-outline">Очистить историю</button>
+                    <button type="button" id="history-clear" class="btn btn-small btn-outline">🗑️ Очистить</button>
                 </div>
             </div>
             <div id="history-stats" class="history-stats" style="display:none"></div>
-            <div id="history-list" class="history-list-scroll"></div>
+            <div id="history-group-stats" class="history-group-stats-wrap" style="display:none"></div>
+            <div id="history-list" class="history-list history-list-scroll"></div>
             <div class="history-pagination" id="history-pagination" style="display:none"></div>
         </div>
 
@@ -568,7 +654,7 @@
                         <span id="stat-primers">0</span>
                     </div>
                     <div class="stat-row">
-                        <span>Сохранено:</span>
+                        <span>В избранном:</span>
                         <span id="stat-saved">0</span>
                     </div>
                     <div class="stat-row">

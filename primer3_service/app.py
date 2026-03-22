@@ -157,6 +157,39 @@ def design():
         "PRIMER_PICK_RIGHT_PRIMER": 1,
         "PRIMER_PICK_INTERNAL_OLIGO": 0,
     }
+
+    # Доп. параметры из расширения (camelCase, прокси Django без изменений)
+    check_hairpins = body.get("checkHairpins", body.get("check_hairpins", True))
+    check_dimers = body.get("checkDimers", body.get("check_dimers", True))
+    if check_hairpins and check_dimers:
+        global_args["PRIMER_MAX_SELF_ANY"] = 8
+        global_args["PRIMER_MAX_SELF_END"] = 3
+    else:
+        global_args["PRIMER_MAX_SELF_ANY"] = 47
+        global_args["PRIMER_MAX_SELF_END"] = 47
+
+    check_repeats = body.get("checkRepeats", body.get("check_repeats", True))
+    max_poly = body.get("maxPolyX", body.get("max_poly_x"))
+    if not check_repeats:
+        global_args["PRIMER_MAX_POLY_X"] = 20
+    elif max_poly is not None:
+        try:
+            global_args["PRIMER_MAX_POLY_X"] = max(3, min(20, int(max_poly)))
+        except (TypeError, ValueError):
+            pass
+
+    for json_key, p3_key in (
+        ("saltNa", "PRIMER_SALT_MONOVALENT"),
+        ("saltMg", "PRIMER_SALT_DIVALENT"),
+        ("saltDntp", "PRIMER_DNTP_CONC"),
+        ("saltDna", "PRIMER_DNA_CONC"),
+    ):
+        if body.get(json_key) is not None:
+            try:
+                global_args[p3_key] = float(body[json_key])
+            except (TypeError, ValueError):
+                pass
+
     try:
         started = time.time()
         result = primer3.bindings.design_primers(seq_args, global_args)

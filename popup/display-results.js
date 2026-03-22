@@ -24,7 +24,7 @@ let deps = null;
  * @param {(fn: () => void) => void} d.setVizRedraw
  * @param {() => void} d.scrollVizToCenter
  * @param {(pair: object) => void | Promise<void>} d.savePrimer
- * @param {(pair: object) => void} d.openFeedbackForPair
+ * @param {(pair: object, savedId?: string|number|null, sequenceContext?: string) => void | Promise<void>} d.openFeedbackForPair
  * @param {(pair: object) => Promise<void>} d.showBlastResults
  * @param {(msg: string) => void} d.showWarning
  * @param {(msg: string) => void} d.showError
@@ -272,7 +272,7 @@ export function displayResults(results, options = {}) {
                         📋 Rev
                     </button>
                     <button class="action-btn save-btn" data-pair='${JSON.stringify(pair)}'>
-                        💾 Сохранить
+                        ⭐ В избранное
                     </button>
                     <button class="action-btn feedback-btn" data-pair='${JSON.stringify(pair)}'>
                         📝 Отзыв
@@ -513,7 +513,7 @@ export function displayResults(results, options = {}) {
     document.querySelectorAll('.feedback-btn').forEach((btn) => {
         btn.addEventListener('click', (e) => {
             const pair = JSON.parse(e.currentTarget.dataset.pair);
-            openFeedbackForPair(pair);
+            openFeedbackForPair(pair, null, getCurrentSequence());
         });
     });
     document.querySelectorAll('.blast-btn').forEach((btn) => {

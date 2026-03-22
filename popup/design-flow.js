@@ -68,6 +68,20 @@ export function createDesignHandlers(d) {
         if (advancedSettings.maxGc != null) body.maxGc = advancedSettings.maxGc;
         if (advancedSettings.tmTolerance != null) body.tmTolerance = advancedSettings.tmTolerance;
         if (advancedSettings.temperatureGradient != null) body.temperatureGradient = advancedSettings.temperatureGradient;
+        body.checkHairpins = advancedSettings.checkHairpins !== false;
+        body.checkDimers = advancedSettings.checkDimers !== false;
+        body.checkRepeats = advancedSettings.checkRepeats !== false;
+        if (advancedSettings.maxPolyX != null) body.maxPolyX = advancedSettings.maxPolyX;
+        if (advancedSettings.saltNa != null) body.saltNa = advancedSettings.saltNa;
+        if (advancedSettings.saltMg != null) body.saltMg = advancedSettings.saltMg;
+        if (advancedSettings.saltDntp != null) body.saltDntp = advancedSettings.saltDntp;
+        if (advancedSettings.saltDna != null) body.saltDna = advancedSettings.saltDna;
+        body.riskThresholds = {
+            low: advancedSettings.lowThreshold ?? 15,
+            mediumMin: advancedSettings.mediumThresholdMin ?? 15,
+            mediumMax: advancedSettings.mediumThresholdMax ?? 40,
+            high: advancedSettings.highThreshold ?? 40,
+        };
         if (typeof console !== 'undefined' && console.log) {
             const debugPayload = { ...body };
             if (debugPayload.sequence) debugPayload.sequence = `${debugPayload.sequence.length} нт`;

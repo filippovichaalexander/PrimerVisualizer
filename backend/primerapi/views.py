@@ -6,8 +6,11 @@ from urllib.request import Request, urlopen
 
 from django.http import HttpResponse
 from rest_framework import status
-from rest_framework.decorators import api_view
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
+
+from .models import Feedback
 
 logger = logging.getLogger(__name__)
 
@@ -104,3 +107,30 @@ def _proxy_to_primer3(request):
             },
             status=status.HTTP_503_SERVICE_UNAVAILABLE,
         )
+
+
+@api_view(["POST"])
+@permission_classes([AllowAny])
+def submit_feedback(request):
+    """
+    Сохранение отзыва о паре праймеров (расширение + опционально авторизованный пользователь).
+    """
+    data = request.data if isinstance(request.data, dict) else {}
+    seq = str(data.get("sequence") or "")[:200000]
+    fwd = str(data.get("forward") or "")[:256]
+    rev = str(data.get("reverse") or "")[:256]
+    if not fwd or not rev:
+        return Response(
+            {"detail": "Поля forward и reverse обязательны"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    result = str(data.get("result") or "")[:32]
+    notes = str(data.get("notes") or "")[:8000]
+    fb = Feedback.objects.create(
+        sequence=seq,
+        forward_primer=fwd,
+        reverse_primer=rev,
+        result=result,
+        notes=notes,
+    )
+    return Response({"ok": True, "id": fb.id}, status=status.HTTP_201_CREATED)

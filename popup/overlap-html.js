@@ -89,7 +89,7 @@ export function buildOverlapEmbeddedPairHtml(pair, idx) {
                         <button type="button" class="action-btn copy-btn" data-seq="${pf.sequence}" data-type="forward">📋 Fwd</button>
                         <button type="button" class="action-btn copy-btn" data-seq="${pr.sequence}" data-type="reverse">📋 Rev</button>
                         <button type="button" class="action-btn save-btn" data-pair='${pairJson}'>
-                            💾 Сохранить
+                            ⭐ В избранное
                         </button>
                         <button type="button" class="action-btn feedback-btn" data-pair='${pairJson}'>
                             📝 Отзыв
